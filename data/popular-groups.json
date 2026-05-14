@@ -1,0 +1,12 @@
+{
+  "generated_at_utc": "2026-05-14T00:00:00Z",
+  "disclaimer": "Candidate discovery list only. Inclusion is not endorsement or performance validation.",
+  "groups": [
+    { "handle": "stocktwitsindia", "label": "Stocktwits India", "market": "India", "category": "stock_specific", "review_status": "candidate" },
+    { "handle": "KotakSecurities", "label": "Kotak Securities", "market": "India", "category": "broker_research", "review_status": "candidate" },
+    { "handle": "motilaloswalofficial", "label": "Motilal Oswal Official", "market": "India", "category": "broker_research", "review_status": "candidate" },
+    { "handle": "nirmalbangofficial", "label": "Nirmal Bang Official", "market": "India", "category": "broker_research", "review_status": "candidate" },
+    { "handle": "Official_AngelOne", "label": "Angel One", "market": "India", "category": "general_market", "review_status": "candidate" },
+    { "handle": "Cnbctv18news", "label": "CNBC TV18", "market": "India", "category": "news_context", "review_status": "candidate" }
+  ]
+}

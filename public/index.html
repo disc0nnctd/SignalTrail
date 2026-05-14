@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SignalTrail</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Public-interest signal transparency</p>
+      <h1>SignalTrail</h1>
+      <p class="lede">A simple public dashboard for masked Telegram trader observations, sample-size context, and historical quality signals.</p>
+      <p class="lede"><strong>Not investment advice.</strong> Example data is masked and aggregated for public viewing.</p>
+    </div>
+    <div class="hero-actions">
+      <a class="button" href="methodology.html">Methodology</a>
+      <a class="button button-ghost" href="publication-policy.html">Publication policy</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro card">
+      <div>
+        <h2>What this page shows</h2>
+        <p>Masked trader aliases, channel-level aggregates, and a quick read on win rate, target/stop balance, and expectancy.</p>
+      </div>
+      <ul class="intro-list">
+        <li>Public, static, and cache-friendly</li>
+        <li>Identity-masked example data</li>
+        <li>Charts for quick pattern recognition</li>
+      </ul>
+    </section>
+
+    <section id="insight" class="card insight-card" aria-label="Performance summary"></section>
+
+    <section id="summary" class="summary-grid" aria-label="Leaderboard summary"></section>
+    <section id="charts" class="charts" aria-label="Charts"></section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Sample breakdown</h2>
+        <span class="muted">Author → stock → days → target/stop outcome</span>
+      </div>
+      <div class="table-wrap">
+        <table id="breakdown"></table>
+      </div>
+    </section>
+
+    <section class="toolbar">
+      <input id="search" placeholder="Search trader/channel" />
+      <select id="tierFilter">
+        <option value="">All tiers</option>
+        <option>A</option><option>B</option><option>C</option><option>D</option><option>IS</option>
+      </select>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Leaderboard</h2>
+        <span id="generated">Loading...</span>
+      </div>
+      <div class="table-wrap">
+        <table id="leaderboard"></table>
+      </div>
+    </section>
+
+    <details class="card metric-guide">
+      <summary class="metric-summary">
+        <span>
+          <strong>What the metrics mean</strong>
+          <span class="muted">Plain-English guide to the public v2-style snapshot</span>
+        </span>
+        <span class="metric-summary-hint">Open to read</span>
+      </summary>
+      <div class="metric-grid">
+        <article class="metric-item"><h3>Messages scanned</h3><p>Total Telegram messages ingested in the backfill window before parsing.</p></article>
+        <article class="metric-item"><h3>Parsed calls</h3><p>Messages the parser could turn into actionable stock calls or setups.</p></article>
+        <article class="metric-item"><h3>Outcome rows</h3><p>All evaluated result rows, including multiple horizons and method types.</p></article>
+        <article class="metric-item"><h3>Call win %</h3><p>Share of calls that ended as wins at the call level after resolution.</p></article>
+        <article class="metric-item"><h3>Resolved win %</h3><p>Win rate after excluding unresolved or incomplete cases from the denominator.</p></article>
+        <article class="metric-item"><h3>Row win %</h3><p>Win rate across every evaluated row, including horizon-based rows.</p></article>
+        <article class="metric-item"><h3>Target/stop win %</h3><p>How often a full trade plan hit target before stop when both levels were available.</p></article>
+        <article class="metric-item"><h3>Directional win %</h3><p>Directional edge against the benchmark when the parser had to fall back to horizon-based evaluation.</p></article>
+        <article class="metric-item"><h3>Bayes win %</h3><p>Shrinkage-adjusted win rate that softens small-sample spikes.</p></article>
+        <article class="metric-item"><h3>Avg R</h3><p>Average return in R-multiples; positive means the sample made money on average.</p></article>
+        <article class="metric-item"><h3>Profit factor</h3><p>Gross wins divided by gross losses; above 1.0 is better, higher is stronger.</p></article>
+        <article class="metric-item"><h3>Confidence</h3><p>Sample-size label that tells you how much trust to place in the row.</p></article>
+      </div>
+    </details>
+  </main>
+
+  <footer>
+    <span>Not investment advice. Historical analytics only. Experimental dataset.</span>
+    <a href="publication-policy.html">Publication policy</a>
+    <a href="add-groups.html">Add groups</a>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

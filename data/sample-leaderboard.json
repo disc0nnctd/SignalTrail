@@ -1,0 +1,40 @@
+{
+  "generated_at_utc": "2026-05-05T00:00:00Z",
+  "methodology_version": "0.1.0",
+  "rows": [
+    {
+      "rank": 1,
+      "display_name": "Sample Trader A",
+      "channel": "@sample_alpha",
+      "tier": "B",
+      "score": 72.4,
+      "calls_evaluated": 86,
+      "trade_plan_coverage_pct": 61.6,
+      "win_rate": 0.558,
+      "bayes_win_rate": 0.552,
+      "avg_r": 0.41,
+      "median_r": 0.22,
+      "profit_factor": 1.38,
+      "timeout_rate": 0.18,
+      "last_call_date": "2026-04-30",
+      "confidence": "eligible"
+    },
+    {
+      "rank": null,
+      "display_name": "Sample Trader B",
+      "channel": "@sample_hype",
+      "tier": "IS",
+      "score": null,
+      "calls_evaluated": 13,
+      "trade_plan_coverage_pct": 15.4,
+      "win_rate": 0.462,
+      "bayes_win_rate": 0.486,
+      "avg_r": -0.12,
+      "median_r": -0.2,
+      "profit_factor": 0.82,
+      "timeout_rate": 0.31,
+      "last_call_date": "2026-05-01",
+      "confidence": "insufficient_sample"
+    }
+  ]
+}
