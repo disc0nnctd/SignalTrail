@@ -1,6 +1,9 @@
 const state = {
   rows: [], sourceSummary: {}, metricsV2: {}, breakdownSamples: [],
-  sorts: { leaderboard: { key: 'calls_evaluated', dir: 'desc' }, breakdown: { key: 'net_return_pct', dir: 'desc' } }
+  sorts: { leaderboard: { key: 'calls_evaluated', dir: 'desc' }, breakdown: { key: 'net_return_pct', dir: 'desc' } },
+  activeTab: 'public',
+  publicData: null,
+  privateData: null,
 };
 const fallbackData = {
   generated_at_utc: '2026-05-14T00:00:00Z',
@@ -392,13 +395,40 @@ function toggleSort(tableName, key) {
   render();
 }
 
-function loadData(data, label) {
+function applyData(data) {
   state.rows = data.rows || [];
   state.sourceSummary = data.source_summary || data.sourceSummary || {};
   state.metricsV2 = data.metrics_v2 || data.metricsV2 || {};
   state.breakdownSamples = data.breakdown_samples || data.breakdownSamples || [];
+}
+
+function loadData(data, label) {
+  applyData(data);
   document.getElementById('generated').textContent = label || `Generated: ${data.generated_at_utc || '-'}`;
   render();
+}
+
+function switchTab(tab) {
+  state.activeTab = tab;
+  const isPublic = tab === 'public';
+
+  document.getElementById('panel-public').hidden = !isPublic;
+  document.getElementById('panel-mine').hidden = isPublic;
+  document.getElementById('tab-btn-public').setAttribute('aria-selected', String(isPublic));
+  document.getElementById('tab-btn-mine').setAttribute('aria-selected', String(!isPublic));
+  document.getElementById('tab-btn-public').classList.toggle('active', isPublic);
+  document.getElementById('tab-btn-mine').classList.toggle('active', !isPublic);
+
+  const data = isPublic ? state.publicData : state.privateData;
+  if (data) {
+    const label = isPublic
+      ? `Generated: ${data.generated_at_utc || '-'}`
+      : `Your data · Generated: ${data.generated_at_utc || '-'}`;
+    loadData(data, label);
+  }
+
+  const url = isPublic ? location.pathname : `${location.pathname}?tab=mine`;
+  history.pushState({ tab }, '', url);
 }
 
 async function main() {
@@ -413,15 +443,22 @@ async function main() {
   } catch (err) {
     label = `Using fallback example data: ${err.message}`;
   }
+  state.publicData = data;
   loadData(data, label);
+
+  if (params.get('tab') === 'mine') switchTab('mine');
+}
+
+// --- Tab switching ---
+function initTabs() {
+  document.getElementById('tab-btn-public').addEventListener('click', () => switchTab('public'));
+  document.getElementById('tab-btn-mine').addEventListener('click', () => switchTab('mine'));
+  window.addEventListener('popstate', (e) => switchTab(e.state?.tab || 'public'));
 }
 
 // --- Upload flow ---
-
-let uploadDisclaimer = null;
-
 function initUpload() {
-  uploadDisclaimer = document.getElementById('uploadDisclaimer');
+  const dialog = document.getElementById('uploadDisclaimer');
   const ack = document.getElementById('disclaimerAck');
   const confirm = document.getElementById('disclaimerConfirm');
   const cancel = document.getElementById('disclaimerCancel');
@@ -429,6 +466,7 @@ function initUpload() {
   const input = document.getElementById('uploadInput');
   const drop = document.getElementById('uploadDrop');
   const banner = document.getElementById('privateViewBanner');
+  const uploadZone = document.getElementById('uploadZone');
   const resetBtn = document.getElementById('resetToPublic');
 
   ack.addEventListener('change', () => { confirm.disabled = !ack.checked; });
@@ -436,17 +474,12 @@ function initUpload() {
   function openDisclaimer() {
     ack.checked = false;
     confirm.disabled = true;
-    uploadDisclaimer.showModal();
+    dialog.showModal();
   }
 
-  cancel.addEventListener('click', () => uploadDisclaimer.close());
-  uploadDisclaimer.addEventListener('click', (e) => { if (e.target === uploadDisclaimer) uploadDisclaimer.close(); });
-
-  confirm.addEventListener('click', () => {
-    uploadDisclaimer.close();
-    input.click();
-  });
-
+  cancel.addEventListener('click', () => dialog.close());
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+  confirm.addEventListener('click', () => { dialog.close(); input.click(); });
   trigger.addEventListener('click', (e) => { e.preventDefault(); openDisclaimer(); });
 
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag-over'); });
@@ -455,7 +488,7 @@ function initUpload() {
     e.preventDefault();
     drop.classList.remove('drag-over');
     const file = e.dataTransfer?.files?.[0];
-    if (file) handleFile(file, openDisclaimer);
+    if (file) openDisclaimer();
   });
 
   input.addEventListener('change', () => {
@@ -465,18 +498,11 @@ function initUpload() {
   });
 
   resetBtn.addEventListener('click', () => {
+    state.privateData = null;
     banner.hidden = true;
-    document.getElementById('uploadZone').hidden = false;
-    main().catch(() => {});
+    uploadZone.hidden = false;
+    if (state.publicData) loadData(state.publicData, `Generated: ${state.publicData.generated_at_utc || '-'}`);
   });
-
-  function handleFile(file, fallback) {
-    if (document.getElementById('disclaimerAck').checked || !uploadDisclaimer) {
-      readAndLoad(file);
-    } else {
-      openDisclaimer();
-    }
-  }
 
   function readAndLoad(file) {
     const reader = new FileReader();
@@ -484,8 +510,9 @@ function initUpload() {
       try {
         const data = JSON.parse(e.target.result);
         if (!Array.isArray(data.rows)) throw new Error('Not a valid leaderboard JSON (missing "rows" array).');
-        loadData(data, `Your data · ${file.name} · Generated: ${data.generated_at_utc || '-'}`);
-        document.getElementById('uploadZone').hidden = true;
+        state.privateData = data;
+        loadData(data, `Your data · Generated: ${data.generated_at_utc || '-'}`);
+        uploadZone.hidden = true;
         banner.hidden = false;
       } catch (err) {
         alert(`Could not load file: ${err.message}`);
@@ -507,5 +534,6 @@ document.getElementById('breakdown').addEventListener('click', (event) => {
   if (!th || th.dataset.sortTable !== 'breakdown') return;
   toggleSort(th.dataset.sortTable, th.dataset.sortKey);
 });
+initTabs();
 initUpload();
 main().catch(err => { document.getElementById('generated').textContent = err.message; });

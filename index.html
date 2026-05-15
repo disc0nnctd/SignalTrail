@@ -11,8 +11,8 @@
     <div>
       <p class="eyebrow">Public-interest signal transparency</p>
       <h1>SignalTrail</h1>
-      <p class="lede">A simple public dashboard for masked Telegram trader observations, sample-size context, and historical quality signals.</p>
-      <p class="lede"><strong>Not investment advice.</strong> Example data is masked and aggregated for public viewing.</p>
+      <p class="lede">Masked Telegram trader observations with sample-size context, win rates, and historical quality signals.</p>
+      <p class="lede"><strong>Not investment advice.</strong> Data is masked and aggregated for public viewing.</p>
     </div>
     <div class="hero-actions">
       <a class="button" href="methodology.html">Methodology</a>
@@ -26,7 +26,7 @@
       <h2 id="disclaimerTitle">Before you upload your data</h2>
       <ul class="disclaimer-list">
         <li><strong>Your file never leaves your browser.</strong> It is read locally using the FileReader API. Nothing is sent to any server.</li>
-        <li><strong>Historical analysis only.</strong> Win rates, scores, and rankings are computed from past signals and do not predict future performance.</li>
+        <li><strong>Historical analysis only.</strong> Win rates and rankings are computed from past signals and do not predict future performance.</li>
         <li><strong>No investment advice.</strong> Nothing on this dashboard should influence any buy, sell, or hold decision.</li>
         <li><strong>Accuracy depends on your data.</strong> Results are only as reliable as the signals your <code>evaluate.py</code> run parsed and evaluated.</li>
         <li><strong>No affiliation.</strong> SignalTrail is not affiliated with SEBI, NSE, BSE, or any brokerage.</li>
@@ -44,52 +44,68 @@
   </dialog>
 
   <main>
-    <section class="intro card">
-      <div>
-        <h2>What this page shows</h2>
-        <p>Masked trader aliases, channel-level aggregates, and a quick read on win rate, target/stop balance, and expectancy.</p>
-      </div>
-      <ul class="intro-list">
-        <li>Public, static, and cache-friendly</li>
-        <li>Identity-masked example data</li>
-        <li>Charts for quick pattern recognition</li>
-      </ul>
-    </section>
+    <!-- Tab bar -->
+    <nav class="tab-bar" role="tablist" aria-label="Dashboard views">
+      <button class="tab active" role="tab" id="tab-btn-public" aria-controls="panel-public" aria-selected="true">
+        Public Leaderboard
+      </button>
+      <button class="tab" role="tab" id="tab-btn-mine" aria-controls="panel-mine" aria-selected="false">
+        My Channels
+      </button>
+    </nav>
 
-    <section class="upload-zone card" id="uploadZone" aria-label="Upload your own data">
-      <div class="upload-steps">
-        <div class="upload-steps-head">
-          <p class="upload-title">Analyze your own channels</p>
-          <p class="upload-sub">Run the evaluation scripts on your machine, then drop the output file here. Your Telegram credentials never leave your device.</p>
+    <!-- Public tab panel -->
+    <div id="panel-public" role="tabpanel" aria-labelledby="tab-btn-public">
+      <section class="intro card">
+        <div>
+          <h2>What this page shows</h2>
+          <p>Masked channel aliases and a quick read on win rate, target/stop balance, and expectancy across public Telegram signal sources.</p>
         </div>
-        <ol class="steps-list">
-          <li>
-            <a class="button button-sm" href="https://github.com/disc0nnctd/SignalTrail/archive/refs/heads/main.zip" download>Download scripts</a>
-            <span>Unzip — no git required</span>
-          </li>
-          <li><code>pip install -r requirements.txt</code></li>
-          <li><code>python3 scripts/login.py</code> &mdash; one-time Telegram auth</li>
-          <li><code>PYTHONPATH=. python3 scripts/evaluate.py</code> &mdash; generates <code>leaderboard-public.json</code></li>
-        </ol>
-      </div>
-      <div class="upload-drop-row">
-        <div class="upload-inner" id="uploadDrop">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 16V8m0 0-3 3m3-3 3 3M20 16.5A4.5 4.5 0 0 0 15.5 12H14a6 6 0 1 0-11.8 1.5"/></svg>
-          <div>
-            <p class="upload-sub" style="margin:0">Drop <code>leaderboard-public.json</code> here, or <button class="upload-link" id="uploadTrigger">choose file</button></p>
-          </div>
-        </div>
-      </div>
-      <input type="file" id="uploadInput" accept=".json,application/json" style="display:none" aria-label="Choose leaderboard JSON file" />
-    </section>
-
-    <div id="privateViewBanner" class="private-banner" hidden>
-      <span>Viewing your private data &mdash; processed locally in your browser, not stored anywhere.</span>
-      <button class="upload-link" id="resetToPublic">Back to public leaderboard</button>
+        <ul class="intro-list">
+          <li>Public, static, and cache-friendly</li>
+          <li>Identity-masked with consistent codenames</li>
+          <li>Charts for quick pattern recognition</li>
+        </ul>
+      </section>
     </div>
 
-    <section id="insight" class="card insight-card" aria-label="Performance summary"></section>
+    <!-- My Channels tab panel -->
+    <div id="panel-mine" role="tabpanel" aria-labelledby="tab-btn-mine" hidden>
+      <div id="privateViewBanner" class="private-banner" hidden>
+        <span>Viewing your private data &mdash; processed locally in your browser, not stored anywhere.</span>
+        <button class="upload-link" id="resetToPublic">Clear and upload another file</button>
+      </div>
 
+      <section class="upload-zone card" id="uploadZone" aria-label="Upload your own data">
+        <div class="upload-steps">
+          <div class="upload-steps-head">
+            <p class="upload-title">Analyze your own channels</p>
+            <p class="upload-sub">Run the evaluation scripts on your machine, then drop the output file here. Your Telegram credentials never leave your device.</p>
+          </div>
+          <ol class="steps-list">
+            <li>
+              <a class="button button-sm" href="https://github.com/disc0nnctd/SignalTrail/archive/refs/heads/main.zip" download>Download scripts</a>
+              <span>Unzip — no git required</span>
+            </li>
+            <li><code>pip install -r requirements.txt</code></li>
+            <li><code>python3 scripts/login.py</code> &mdash; one-time Telegram auth</li>
+            <li><code>PYTHONPATH=. python3 scripts/evaluate.py</code> &mdash; generates <code>leaderboard-public.json</code></li>
+          </ol>
+        </div>
+        <div class="upload-drop-row">
+          <div class="upload-inner" id="uploadDrop">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 16V8m0 0-3 3m3-3 3 3M20 16.5A4.5 4.5 0 0 0 15.5 12H14a6 6 0 1 0-11.8 1.5"/></svg>
+            <div>
+              <p class="upload-sub" style="margin:0">Drop <code>leaderboard-public.json</code> here, or <button class="upload-link" id="uploadTrigger">choose file</button></p>
+            </div>
+          </div>
+        </div>
+        <input type="file" id="uploadInput" accept=".json,application/json" style="display:none" aria-label="Choose leaderboard JSON file" />
+      </section>
+    </div>
+
+    <!-- Shared dashboard content (rendered for whichever tab is active) -->
+    <section id="insight" class="card insight-card" aria-label="Performance summary"></section>
     <section id="summary" class="summary-grid" aria-label="Leaderboard summary"></section>
     <section id="charts" class="charts" aria-label="Charts"></section>
 

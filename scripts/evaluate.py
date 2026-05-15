@@ -1156,6 +1156,7 @@ def _write_leaderboard(
     id_to_handle: Dict[str, str],
     out_path: Path,
     now: datetime,
+    is_threshold: int = 8,
 ) -> None:
     from collections import defaultdict as _dd
     rankings = payload.get("rankings", {})
@@ -1194,7 +1195,7 @@ def _write_leaderboard(
         resolved_ts = int(ts["resolved_target_stop_rows"])
         target_hits = int(ts["target_hits"])
         stop_hits = int(ts["stop_hits"])
-        tier = "IS" if calls < 20 else str(row.get("tier") or "D")
+        tier = "IS" if calls < is_threshold else str(row.get("tier") or "D")
         public_rank = None if tier == "IS" else rank
         if public_rank is not None:
             rank += 1
@@ -1292,6 +1293,7 @@ def main() -> int:
     ap.add_argument("--out-dir", default="data/output")
     ap.add_argument("--runtime-json", default="data/output/scores.json")
     ap.add_argument("--leaderboard-out", default="leaderboard-public.json", help="Write masked public leaderboard JSON directly to this path.")
+    ap.add_argument("--is-threshold", type=int, default=8, help="Minimum calls required for a channel to be marked eligible (default: 8).")
     ap.add_argument("--from-date", default="", help="Optional YYYY-MM-DD filter on sent_at (inclusive)")
     ap.add_argument("--to-date", default="", help="Optional YYYY-MM-DD filter on sent_at (inclusive)")
     ap.add_argument("--time-frequency", default="month", choices=["day", "week", "month"])
@@ -1508,7 +1510,7 @@ def main() -> int:
             id_to_handle[cid] = handle
 
     if args.leaderboard_out:
-        _write_leaderboard(payload, outcomes, id_to_handle, Path(args.leaderboard_out), now)
+        _write_leaderboard(payload, outcomes, id_to_handle, Path(args.leaderboard_out), now, is_threshold=args.is_threshold)
 
     print(
         json.dumps(

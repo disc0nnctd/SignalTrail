@@ -111,6 +111,12 @@ td { color:#dce8f8; }
 .good { color:var(--good); } .bad { color:var(--bad); } .muted { color:var(--muted); }
 footer { padding:24px 7vw; display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line); color:var(--muted); }
 
+/* Tab bar */
+.tab-bar { display:flex; gap:4px; margin-bottom:22px; border-bottom:1px solid var(--line); padding-bottom:0; }
+.tab { background:none; border:none; color:var(--muted); cursor:pointer; font:inherit; font-size:15px; font-weight:600; padding:12px 18px; border-radius:10px 10px 0 0; border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .15s, border-color .15s; }
+.tab:hover { color:var(--text); }
+.tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+
 /* Upload zone */
 .upload-zone { margin-bottom:18px; }
 .upload-steps { padding:22px 26px 16px; border-bottom:1px solid var(--line); }
