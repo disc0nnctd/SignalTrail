@@ -9,6 +9,14 @@ data/private/
 *.db
 .beads-credential-key
 
+# Credentials & session — never commit these
+.env
+.cache/telegram.session
+.cache/*.session
+
+# Generated output
+data/output/*.json
+
 # IDE & local tooling
 .claude/
 .omc/

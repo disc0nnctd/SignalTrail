@@ -1,132 +1,159 @@
 # SignalTrail
 
-SignalTrail is an open-source transparency dashboard for evaluating historical performance of public Telegram market calls.
+Transparency dashboard for evaluating historical performance of public Telegram market signal channels.
+Fetches messages via Telegram MTProto, parses trading calls, scores them against real market data,
+and publishes a masked public leaderboard.
 
-## Positioning
+> Not investment advice. Historical win rates do not predict future performance.
 
-This project is a data experiment and public-interest analytics tool.
+---
 
-- Not investment advice.
-- Not a buy/sell recommendation engine.
-- Not an accusation platform.
+## How it works
 
-SignalTrail publishes reproducible historical metrics with clear limitations.
+1. **Fetch** — `evaluate.py` connects to Telegram via your own MTProto session and pulls messages from the channels listed in `channels.json`.
+2. **Parse** — A rule-based parser extracts directional calls (buy/sell), symbols, entry/stop/target levels. Optional LLM pass improves extraction on noisy messages.
+3. **Score** — Each parsed call is evaluated against Yahoo Finance daily candles at 1d/3d/5d/10d horizons with benchmark-relative excess return.
+4. **Publish** — `leaderboard-public.json` is written with identities masked (3 known public channels shown by name, all others as `****`).
 
-## Legal-Safety Baseline
+---
 
-For public deployment:
+## Setup
 
-- Use neutral wording only.
-- Avoid allegations (fraud/scam intent).
-- Use only public or permissioned content.
-- Expose correction/takedown path.
-- Display sample-size confidence labels.
-- Keep methodology and policy linked from UI.
-
-SEBI-facing note for India users:
-- SignalTrail does not provide personalized recommendations.
-- If your usage model expands into paid recommendations/research distribution, obtain legal review for RA/IA regulatory exposure before launch.
-
-## Project Structure
-
-- `public/` static app
-- `public/leaderboard.json` leaderboard dataset
-- `docs/methodology.md` metric/evaluation rules
-- `docs/publication-policy.md` publication and moderation policy
-- `docs/add-telegram-groups.md` how to onboard Telegram groups
-- `data/popular-groups.json` curated candidate list
-- `scripts/import-telegram-quality.py` import upstream evaluation output
-
-## Quick Start
+### 1. Install dependencies
 
 ```bash
-cd /home/notdc/SignalTrail
-python3 -m http.server 8791
+pip install -r requirements.txt
 ```
 
-Open `http://127.0.0.1:8791/index.html`.
+### 2. Get Telegram API credentials
 
-## Refresh Data
+Create a Telegram application at https://my.telegram.org/apps and note the **API ID** and **API Hash**.
+
+### 3. Create `.env`
 
 ```bash
-python3 /home/notdc/SignalTrail/scripts/import-telegram-quality.py \
-  --input /home/notdc/trader/reports-swing/telegram-quality/summary.json \
-  --outcomes /home/notdc/trader/reports-swing/telegram-quality/outcomes.json \
-  --out /home/notdc/SignalTrail/public/leaderboard.json
+cp .env.example .env
+# fill in TELEGRAM_API_ID and TELEGRAM_API_HASH
 ```
 
-This importer now publishes explicit `target_hits` and `stop_hits` per author, derived from target/stop evaluated rows.
-
-By default, local exports preserve real source labels.
-Do not keep those local-truth files in the published root if the repo is going to GitHub Pages.
-Use `data/private/` or another non-published location for internal review artifacts.
-
-For public-facing exports or screenshots, generate a masked dataset:
+### 4. One-time login
 
 ```bash
-python3 /home/notdc/SignalTrail/scripts/import-telegram-quality.py \
-  --input /home/notdc/trader/reports-swing/telegram-quality/summary.json \
-  --outcomes /home/notdc/trader/reports-swing/telegram-quality/outcomes.json \
-  --out /home/notdc/SignalTrail/public/leaderboard-public.json \
-  --mask-identities
+python3 scripts/login.py
 ```
 
-The GitHub Pages / public site should publish only `leaderboard-public.json` at the repo root.
+Enter your phone number, OTP, and 2FA password when prompted.
+The session file is saved to `.cache/telegram.session` (gitignored).
 
+---
 
-## Telegram API Login and Channel Access
-
-Telegram access is handled by the internal trader, not the public site.
-
-1. Create Telegram API credentials at `https://my.telegram.org/apps`
-2. Run the one-time MTProto login helper:
+## Generate leaderboard
 
 ```bash
-python3 /home/notdc/trader/scripts/telegram_login.py
+PYTHONPATH=. python3 scripts/evaluate.py
 ```
 
-3. Enter your phone number, OTP, and 2FA password if prompted
-4. The script saves a reusable session file so the trader can access public or permissioned channels without repeating the login flow
+This writes:
+- `leaderboard-public.json` — masked public leaderboard (commit this for GitHub Pages)
+- `data/output/summary.json` — full ranked output with all metrics
+- `data/output/outcomes.json` — per-call outcome rows
+- `data/output/scores.json` — lightweight scores per channel/author
 
-Notes:
+### Common options
 
-- This uses Telegram MTProto via Telethon, not the Bot API.
-- Only public or permissioned channels should be added to the trader configuration.
-- Keep API ID, API hash, and session files out of public output.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lookback-days` | 240 | How many days of messages to fetch |
+| `--max-messages-per-channel` | 600 | Cap per channel |
+| `--horizons` | `1,3,5,10` | Evaluation windows in trading days |
+| `--benchmark-symbol` | `NIFTYBEES.NS` | Benchmark for excess return |
+| `--leaderboard-out` | `leaderboard-public.json` | Output path for masked leaderboard |
+| `--win-threshold-pct` | 1.0 | Min excess return % to count as win |
+| `--loss-threshold-pct` | -1.0 | Max excess return % to count as loss |
 
-## GitHub Pages Deployment
+---
 
-This repo is now root-layout friendly for GitHub Pages.
+## LLM-assisted parsing
 
-Public deployment rule:
+Rule-based parsing misses calls in noisy or conversational messages.
+Two optional LLM layers can improve results:
 
-- publish only the masked file: `leaderboard-public.json`
-- keep local truth data outside the published root
+### Verifier (local, Ollama)
 
-After you push:
-
-1. Open GitHub repo `Settings -> Pages`
-2. Set `Source` to `GitHub Actions`
-3. Push to `main`
-
-## LLM Extraction (Target/SL Parsing)
-
-If you want better extraction of target and stop loss from noisy chat text:
+A lightweight model re-checks parsed calls and rejects false positives.
 
 ```bash
-export OPENAI_API_KEY="..."
-python3 /home/notdc/SignalTrail/scripts/extract_calls_llm.py \
-  --input /path/to/messages.json \
-  --out /path/to/extracted-calls.json \
-  --model gpt-4.1-mini
+PYTHONPATH=. python3 scripts/evaluate.py \
+  --llm-verify-enabled \
+  --llm-verify-endpoint http://localhost:11434 \
+  --llm-verify-model qwen2.5-7b-local \
+  --llm-verify-mode review_only
 ```
 
-This script returns structured fields (`symbol`, `direction`, `entry`, `target`, `stop_loss`, `confidence`) and marks ambiguous rows as non-actionable.
+`review_only` (default) only calls the LLM on messages the rule parser flagged as uncertain.
+`always` runs the LLM on every accepted call — more accurate, slower.
 
-## Add Telegram Groups
+**Recommended local models (via Ollama):** `qwen2.5-7b-local`, `gemma3:4b`, `phi4-mini`
 
-Follow [docs/add-telegram-groups.md](/home/notdc/SignalTrail/docs/add-telegram-groups.md).
+### Extractor (OpenAI-compatible)
 
-## License
+A stronger model extracts structured entry/stop/target levels from messages where the rule parser found only partial data.
 
-MIT (see [LICENSE](/home/notdc/SignalTrail/LICENSE)).
+```bash
+PYTHONPATH=. python3 scripts/evaluate.py \
+  --llm-extract-enabled \
+  --llm-extract-endpoint https://api.openai.com/v1 \
+  --llm-extract-model gpt-4.1-mini \
+  --llm-extract-api-key $OPENAI_API_KEY
+```
+
+You can point `--llm-extract-endpoint` at any OpenAI-compatible server (local llama.cpp, vLLM, etc.).
+
+### Environment variable shortcuts
+
+```bash
+export HERMES_LLM_VERIFY_ENDPOINT=http://localhost:11434
+export HERMES_LLM_VERIFY_MODEL=qwen2.5-7b-local
+export HERMES_LLM_EXTRACT_ENDPOINT=https://api.openai.com/v1
+export HERMES_LLM_EXTRACT_MODEL=gpt-4.1-mini
+export HERMES_LLM_EXTRACT_API_KEY=sk-...
+```
+
+---
+
+## Adding channels
+
+Edit `channels.json`:
+
+```json
+{
+  "telegram": {
+    "sources": [
+      { "handle": "yourchannel", "label": "Your Channel" }
+    ]
+  },
+  "universe": [...]
+}
+```
+
+- `handle` is the Telegram public username (no `@`)
+- `universe` is the list of NSE/BSE symbols to match against. Pre-populated from NSE equity list.
+
+---
+
+## GitHub Pages deployment
+
+The static dashboard (`index.html` + `app.js`) is served directly from the repo root.
+
+1. Push `leaderboard-public.json` to `main`
+2. Go to repo **Settings → Pages → Source: Deploy from branch → main / root**
+3. The site goes live at `https://<username>.github.io/<repo>`
+
+---
+
+## Disclaimer
+
+- SignalTrail is a data transparency experiment, not a financial product.
+- Performance metrics are historical and based on rule-parsed signals, not verified human intent.
+- Not affiliated with SEBI, NSE, or any brokerage.
+- If you deploy publicly, display sample-size confidence labels and link to methodology.

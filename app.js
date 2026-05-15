@@ -392,25 +392,107 @@ function toggleSort(tableName, key) {
   render();
 }
 
+function loadData(data, label) {
+  state.rows = data.rows || [];
+  state.sourceSummary = data.source_summary || data.sourceSummary || {};
+  state.metricsV2 = data.metrics_v2 || data.metricsV2 || {};
+  state.breakdownSamples = data.breakdown_samples || data.breakdownSamples || [];
+  document.getElementById('generated').textContent = label || `Generated: ${data.generated_at_utc || '-'}`;
+  render();
+}
+
 async function main() {
   const params = new URLSearchParams(window.location.search);
   const dataset = params.get('dataset') || 'leaderboard-public.json';
   let data = fallbackData;
+  let label = null;
   try {
     const res = await fetch(dataset, { cache: 'no-store' });
     if (!res.ok) throw new Error(`Failed to load ${dataset} (${res.status})`);
     data = await res.json();
   } catch (err) {
-    document.getElementById('generated').textContent = `Using fallback example data: ${err.message}`;
+    label = `Using fallback example data: ${err.message}`;
   }
-  state.rows = data.rows || [];
-  state.sourceSummary = data.source_summary || data.sourceSummary || {};
-  state.metricsV2 = data.metrics_v2 || data.metricsV2 || {};
-  state.breakdownSamples = data.breakdown_samples || data.breakdownSamples || [];
-  if (state.rows.length && !document.getElementById('generated').textContent.startsWith('Using fallback example data')) {
-    document.getElementById('generated').textContent = `Generated: ${data.generated_at_utc || '-'}`;
+  loadData(data, label);
+}
+
+// --- Upload flow ---
+
+let uploadDisclaimer = null;
+
+function initUpload() {
+  uploadDisclaimer = document.getElementById('uploadDisclaimer');
+  const ack = document.getElementById('disclaimerAck');
+  const confirm = document.getElementById('disclaimerConfirm');
+  const cancel = document.getElementById('disclaimerCancel');
+  const trigger = document.getElementById('uploadTrigger');
+  const input = document.getElementById('uploadInput');
+  const drop = document.getElementById('uploadDrop');
+  const banner = document.getElementById('privateViewBanner');
+  const resetBtn = document.getElementById('resetToPublic');
+
+  ack.addEventListener('change', () => { confirm.disabled = !ack.checked; });
+
+  function openDisclaimer() {
+    ack.checked = false;
+    confirm.disabled = true;
+    uploadDisclaimer.showModal();
   }
-  render();
+
+  cancel.addEventListener('click', () => uploadDisclaimer.close());
+  uploadDisclaimer.addEventListener('click', (e) => { if (e.target === uploadDisclaimer) uploadDisclaimer.close(); });
+
+  confirm.addEventListener('click', () => {
+    uploadDisclaimer.close();
+    input.click();
+  });
+
+  trigger.addEventListener('click', (e) => { e.preventDefault(); openDisclaimer(); });
+
+  drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('drag-over'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('drag-over');
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleFile(file, openDisclaimer);
+  });
+
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    if (file) readAndLoad(file);
+    input.value = '';
+  });
+
+  resetBtn.addEventListener('click', () => {
+    banner.hidden = true;
+    document.getElementById('uploadZone').hidden = false;
+    main().catch(() => {});
+  });
+
+  function handleFile(file, fallback) {
+    if (document.getElementById('disclaimerAck').checked || !uploadDisclaimer) {
+      readAndLoad(file);
+    } else {
+      openDisclaimer();
+    }
+  }
+
+  function readAndLoad(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!Array.isArray(data.rows)) throw new Error('Not a valid leaderboard JSON (missing "rows" array).');
+        loadData(data, `Your data · ${file.name} · Generated: ${data.generated_at_utc || '-'}`);
+        document.getElementById('uploadZone').hidden = true;
+        banner.hidden = false;
+      } catch (err) {
+        alert(`Could not load file: ${err.message}`);
+      }
+    };
+    reader.readAsText(file);
+  }
 }
 
 document.getElementById('search').addEventListener('input', render);
@@ -425,4 +507,5 @@ document.getElementById('breakdown').addEventListener('click', (event) => {
   if (!th || th.dataset.sortTable !== 'breakdown') return;
   toggleSort(th.dataset.sortTable, th.dataset.sortKey);
 });
+initUpload();
 main().catch(err => { document.getElementById('generated').textContent = err.message; });

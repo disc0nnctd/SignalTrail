@@ -20,6 +20,29 @@
     </div>
   </header>
 
+  <!-- Disclaimer modal -->
+  <dialog id="uploadDisclaimer" aria-labelledby="disclaimerTitle">
+    <div class="dialog-inner">
+      <h2 id="disclaimerTitle">Before you upload your data</h2>
+      <ul class="disclaimer-list">
+        <li><strong>Your file never leaves your browser.</strong> It is read locally using the FileReader API. Nothing is sent to any server.</li>
+        <li><strong>Historical analysis only.</strong> Win rates, scores, and rankings are computed from past signals and do not predict future performance.</li>
+        <li><strong>No investment advice.</strong> Nothing on this dashboard should influence any buy, sell, or hold decision.</li>
+        <li><strong>Accuracy depends on your data.</strong> Results are only as reliable as the signals your <code>evaluate.py</code> run parsed and evaluated.</li>
+        <li><strong>No affiliation.</strong> SignalTrail is not affiliated with SEBI, NSE, BSE, or any brokerage.</li>
+        <li><strong>You are responsible</strong> for ensuring the channels you evaluated are ones you have legal access to.</li>
+      </ul>
+      <label class="disclaimer-check">
+        <input type="checkbox" id="disclaimerAck" />
+        I understand this is experimental historical analysis, not financial or investment advice.
+      </label>
+      <div class="dialog-actions">
+        <button class="button button-ghost" id="disclaimerCancel">Cancel</button>
+        <button class="button" id="disclaimerConfirm" disabled>Continue to upload</button>
+      </div>
+    </div>
+  </dialog>
+
   <main>
     <section class="intro card">
       <div>
@@ -32,6 +55,38 @@
         <li>Charts for quick pattern recognition</li>
       </ul>
     </section>
+
+    <section class="upload-zone card" id="uploadZone" aria-label="Upload your own data">
+      <div class="upload-steps">
+        <div class="upload-steps-head">
+          <p class="upload-title">Analyze your own channels</p>
+          <p class="upload-sub">Run the evaluation scripts on your machine, then drop the output file here. Your Telegram credentials never leave your device.</p>
+        </div>
+        <ol class="steps-list">
+          <li>
+            <a class="button button-sm" href="https://github.com/disc0nnctd/SignalTrail/archive/refs/heads/main.zip" download>Download scripts</a>
+            <span>Unzip — no git required</span>
+          </li>
+          <li><code>pip install -r requirements.txt</code></li>
+          <li><code>python3 scripts/login.py</code> &mdash; one-time Telegram auth</li>
+          <li><code>PYTHONPATH=. python3 scripts/evaluate.py</code> &mdash; generates <code>leaderboard-public.json</code></li>
+        </ol>
+      </div>
+      <div class="upload-drop-row">
+        <div class="upload-inner" id="uploadDrop">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 16V8m0 0-3 3m3-3 3 3M20 16.5A4.5 4.5 0 0 0 15.5 12H14a6 6 0 1 0-11.8 1.5"/></svg>
+          <div>
+            <p class="upload-sub" style="margin:0">Drop <code>leaderboard-public.json</code> here, or <button class="upload-link" id="uploadTrigger">choose file</button></p>
+          </div>
+        </div>
+      </div>
+      <input type="file" id="uploadInput" accept=".json,application/json" style="display:none" aria-label="Choose leaderboard JSON file" />
+    </section>
+
+    <div id="privateViewBanner" class="private-banner" hidden>
+      <span>Viewing your private data &mdash; processed locally in your browser, not stored anywhere.</span>
+      <button class="upload-link" id="resetToPublic">Back to public leaderboard</button>
+    </div>
 
     <section id="insight" class="card insight-card" aria-label="Performance summary"></section>
 

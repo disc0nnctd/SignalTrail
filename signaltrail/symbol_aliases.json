@@ -1,0 +1,20 @@
+{
+  "CYBN": [
+    {
+      "symbol": "HELP",
+      "effective_date": "2026-01-05",
+      "note": "Official successor ticker after Cybin/Helus transfer from NYSE American (CYBN) to Nasdaq (HELP); not an INDmoney-only alias."
+    },
+    {
+      "symbol": "CYBN",
+      "note": "Historical NYSE American ticker through 2026-01-02; keep for legacy/backfill research."
+    }
+  ],
+  "TATAMOTORS": [
+    "TATAMOTORS"
+  ],
+  "ZOMATO": [
+    "ETERNAL",
+    "ZOMATO"
+  ]
+}
