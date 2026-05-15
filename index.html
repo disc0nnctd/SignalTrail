@@ -105,35 +105,32 @@
     </div>
 
     <!-- Shared dashboard content (rendered for whichever tab is active) -->
-    <section id="insight" class="card insight-card" aria-label="Performance summary"></section>
-    <section id="summary" class="summary-grid" aria-label="Leaderboard summary"></section>
+    <section class="card" style="margin-bottom:0;border-bottom:none;border-radius:22px 22px 0 0">
+      <div class="card-head">
+        <h2>Leaderboard</h2>
+        <span id="generated" class="muted" style="font-family:ui-monospace,monospace;font-size:13px">Loading...</span>
+      </div>
+      <div class="toolbar">
+        <input id="search" placeholder="Search trader/channel" />
+        <select id="tierFilter">
+          <option value="">All tiers</option>
+          <option>A</option><option>B</option><option>C</option><option>D</option><option>IS</option>
+        </select>
+      </div>
+      <div class="table-wrap">
+        <table id="leaderboard"></table>
+      </div>
+    </section>
+
     <section id="charts" class="charts" aria-label="Charts"></section>
 
     <section class="card">
       <div class="card-head">
         <h2>Sample breakdown</h2>
-        <span class="muted">Author → stock → days → target/stop outcome</span>
+        <span class="muted">Top calls by return — author · stock · horizon · outcome</span>
       </div>
       <div class="table-wrap">
         <table id="breakdown"></table>
-      </div>
-    </section>
-
-    <section class="toolbar">
-      <input id="search" placeholder="Search trader/channel" />
-      <select id="tierFilter">
-        <option value="">All tiers</option>
-        <option>A</option><option>B</option><option>C</option><option>D</option><option>IS</option>
-      </select>
-    </section>
-
-    <section class="card">
-      <div class="card-head">
-        <h2>Leaderboard</h2>
-        <span id="generated">Loading...</span>
-      </div>
-      <div class="table-wrap">
-        <table id="leaderboard"></table>
       </div>
     </section>
 

@@ -56,7 +56,7 @@ main { padding:28px 7vw 60px; }
 .bar-fill.good { background:linear-gradient(90deg, rgba(34,197,94,.95), rgba(56,189,248,.9)); }
 .bar-fill.warn { background:linear-gradient(90deg, rgba(245,158,11,.95), rgba(56,189,248,.9)); }
 .bar-foot { display:flex; justify-content:space-between; gap:12px; }
-.toolbar { display:flex; gap:12px; margin:22px 0; }
+.toolbar { display:flex; gap:12px; padding:12px 20px; border-bottom:1px solid var(--line); }
 input, select { background:var(--panel); border:1px solid var(--line); color:var(--text); border-radius:14px; padding:12px 14px; font:inherit; }
 input { min-width:280px; flex:1; }
 .card-head { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:20px; border-bottom:1px solid var(--line); }

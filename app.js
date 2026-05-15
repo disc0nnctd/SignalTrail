@@ -146,57 +146,6 @@ function sortRows(rows, tableName) {
 function sourceMeta(data) { return data.sourceSummary || data.source_summary || {}; }
 function metricsMeta(data) { return data.metricsV2 || data.metrics_v2 || {}; }
 
-function renderSummary(data) {
-  const source = sourceMeta(data);
-  const metrics = metricsMeta(data);
-  const call = metrics.call_level || {};
-  const row = metrics.row_level || {};
-  const target = (metrics.methods || {}).target_stop || {};
-  const directional = (metrics.methods || {}).directional_horizon || {};
-  const stats = overallStats(data.rows || []);
-  const horizons = Array.isArray(source.horizons_days) ? source.horizons_days.join('/') + 'd' : 'multi-horizon';
-  document.getElementById('summary').innerHTML = [
-    statCard('Channels audited', fmt(stats.traders, 0), `${source.lookback_days ?? '-'} day lookback`),
-    statCard('Parsed calls', fmt(source.parsed_calls_count ?? stats.calls, 0), horizons),
-    statCard('Outcome rows', fmt(source.outcome_rows_count ?? stats.rows, 0), `Benchmark: ${source.benchmark_symbol || '—'}`),
-    statCard('Call win', pct(call.win_rate ?? stats.callWin), `Resolved-only ${pct(call.resolved_win_rate ?? stats.resolvedWin)}`),
-    statCard('Row win', pct(row.win_rate ?? stats.rowWin), `Resolved-only ${pct(row.resolved_win_rate ?? stats.rowResolvedWin)}`),
-    statCard('Target/stop win', pct(target.target_stop_win_rate ?? stats.targetHitRate), `${fmt(sum((data.rows || []).filter(r => Number(r.target_stop_rows) > 0), 'target_stop_rows'), 0)} target-plan rows`),
-    statCard('Directional win', pct(directional.benchmark_relative_win_rate ?? stats.directionalWin), 'Versus benchmark'),
-    statCard('Bayes win', pct(call.bayes_win_rate ?? stats.bayesWin), 'Shrinkage-adjusted'),
-    statCard('Avg R', `<span class="${Number(stats.avgR || 0) >= 0 ? 'good' : 'bad'}">${fmt(call.expectancy ?? stats.avgR, 2)}</span>`, `Median ${fmt(call.median_return, 2)} R`),
-    statCard('Profit factor', fmt(call.profit_factor ?? stats.profitFactor, 2), 'Best sources float to the top'),
-  ].join('');
-}
-
-function renderInsight(rows, data) {
-  const metrics = metricsMeta(data);
-  const call = metrics.call_level || {};
-  const row = metrics.row_level || {};
-  const target = (metrics.methods || {}).target_stop || {};
-  const directional = (metrics.methods || {}).directional_horizon || {};
-  const top = [...rows].sort((a, b) => {
-    const scoreA = (Number(a.profit_factor) || 0) + (Number(a.resolved_win_rate) || 0) * 10 + (Number(a.avg_r) || 0) / 5;
-    const scoreB = (Number(b.profit_factor) || 0) + (Number(b.resolved_win_rate) || 0) * 10 + (Number(b.avg_r) || 0) / 5;
-    return scoreB - scoreA;
-  })[0];
-  const standout = top ? `${esc(top.display_name)} looks strongest in this sample: ${pct(top.resolved_win_rate ?? top.call_win_rate)} resolved win, PF ${fmt(top.profit_factor, 2)}, and avg R ${fmt(top.avg_r, 2)}.` : 'No source data available.';
-  const moreLikely = top && Number(top.resolved_win_rate) >= 0.5
-    ? `${esc(top.display_name)} is the most likely to win more often than lose in the visible sample, based on resolved outcomes and risk-adjusted edge.`
-    : 'No source in the current view clears the simple >50% resolved-win heuristic.';
-  const sampleNote = `${fmt(rows.length, 0)} visible sources, with ${fmt((data.sourceSummary || data.source_summary || {}).parsed_calls_count ?? rows.reduce((a, r) => a + (Number(r.calls_evaluated) || 0), 0), 0)} parsed calls across the selected view.`;
-  document.getElementById('insight').innerHTML = `
-    <div class="card-head">
-      <h2>Performance summary</h2>
-      <span class="muted">Plain-language read of the current sample</span>
-    </div>
-    <div style="padding:18px 20px 20px">
-      <p class="insight-copy">${standout} ${moreLikely}</p>
-      <p class="insight-meta">At the method level, call win is ${pct(call.win_rate)}, resolved-only win is ${pct(call.resolved_win_rate)}, row win is ${pct(row.win_rate)}, target/stop win is ${pct(target.target_stop_win_rate)}, and directional win vs benchmark is ${pct(directional.benchmark_relative_win_rate)}.</p>
-      <p class="insight-meta">${sampleNote} Treat this as a sample snapshot, not a promise of future returns.</p>
-    </div>
-  `;
-}
 
 function renderBarChart(rows, { title, subtitle, metric, formatValue, foot, filter = () => true }) {
   const items = rows.filter(filter).filter(row => Number.isFinite(Number(row?.[metric]))).sort((a, b) => (Number(b?.[metric]) || 0) - (Number(a?.[metric]) || 0)).slice(0, 6);
@@ -304,9 +253,11 @@ function render() {
       return (!q || text.includes(q)) && (!tier || r.tier === tier);
     })
   , 'leaderboard');
+  const src = state.sourceSummary || {};
+  const eligible = rows.filter(r => r.tier !== 'IS').length;
+  document.getElementById('generated').textContent =
+    `${rows.length} channels · ${fmt(src.parsed_calls_count, 0)} calls · ${src.lookback_days ?? '-'}d lookback · ${src.benchmark_symbol ?? '-'}`;
   renderLeaderboard(rows);
-  renderInsight(rows, { sourceSummary: state.sourceSummary, source_summary: state.sourceSummary, metricsV2: state.metricsV2, metrics_v2: state.metricsV2 });
-  renderSummary({ rows, sourceSummary: state.sourceSummary, metricsV2: state.metricsV2 });
   renderCharts(rows, { sourceSummary: state.sourceSummary, metricsV2: state.metricsV2 });
   renderBreakdown();
 }
@@ -402,9 +353,8 @@ function applyData(data) {
   state.breakdownSamples = data.breakdown_samples || data.breakdownSamples || [];
 }
 
-function loadData(data, label) {
+function loadData(data) {
   applyData(data);
-  document.getElementById('generated').textContent = label || `Generated: ${data.generated_at_utc || '-'}`;
   render();
 }
 
@@ -420,12 +370,7 @@ function switchTab(tab) {
   document.getElementById('tab-btn-mine').classList.toggle('active', !isPublic);
 
   const data = isPublic ? state.publicData : state.privateData;
-  if (data) {
-    const label = isPublic
-      ? `Generated: ${data.generated_at_utc || '-'}`
-      : `Your data · Generated: ${data.generated_at_utc || '-'}`;
-    loadData(data, label);
-  }
+  if (data) loadData(data);
 
   const url = isPublic ? location.pathname : `${location.pathname}?tab=mine`;
   history.pushState({ tab }, '', url);
@@ -444,7 +389,7 @@ async function main() {
     label = `Using fallback example data: ${err.message}`;
   }
   state.publicData = data;
-  loadData(data, label);
+  loadData(data);
 
   if (params.get('tab') === 'mine') switchTab('mine');
 }
@@ -501,7 +446,7 @@ function initUpload() {
     state.privateData = null;
     banner.hidden = true;
     uploadZone.hidden = false;
-    if (state.publicData) loadData(state.publicData, `Generated: ${state.publicData.generated_at_utc || '-'}`);
+    if (state.publicData) loadData(state.publicData);
   });
 
   function readAndLoad(file) {
@@ -511,7 +456,7 @@ function initUpload() {
         const data = JSON.parse(e.target.result);
         if (!Array.isArray(data.rows)) throw new Error('Not a valid leaderboard JSON (missing "rows" array).');
         state.privateData = data;
-        loadData(data, `Your data · Generated: ${data.generated_at_utc || '-'}`);
+        loadData(data);
         uploadZone.hidden = true;
         banner.hidden = false;
       } catch (err) {
