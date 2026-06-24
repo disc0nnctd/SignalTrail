@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Convert Telegram quality evaluation output into public leaderboard JSON.
 
-Input: /home/notdc/trader/reports-swing/telegram-quality/summary.json
-Output: public/leaderboard.json
+Input:  data/output/summary.json  (default; override with --input)
+Output: public/leaderboard-public.json  (default; override with --out)
 
 This intentionally publishes only aggregate metrics. Do not publish raw private
 messages or personal data without a separate review process.
@@ -81,14 +81,17 @@ def build_breakdown_samples(outcomes: list[dict[str, Any]], limit: int = 8) -> l
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default="/home/notdc/trader/reports-swing/telegram-quality/summary.json")
-    ap.add_argument("--outcomes", default="/home/notdc/trader/reports-swing/telegram-quality/outcomes.json")
-    ap.add_argument("--out", default="/home/notdc/telegram-trader-leaderboard/public/leaderboard.json")
+    ap.add_argument("--input", default="data/output/summary.json")
+    ap.add_argument("--outcomes", default="data/output/outcomes.json")
+    ap.add_argument("--out", default="public/leaderboard-public.json")
     ap.add_argument("--min-public-calls", type=int, default=20)
     ap.add_argument("--mask-identities", action=argparse.BooleanOptionalAction, default=False, help="Mask trader/channel identities for public-facing JSON.")
     args = ap.parse_args()
 
-    payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    input_path = Path(args.input)
+    if not input_path.exists():
+        raise SystemExit(f"Input file not found: {input_path}. Run evaluate.py first to generate it.")
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
     outcomes_path = Path(args.outcomes)
     outcomes_payload = json.loads(outcomes_path.read_text(encoding="utf-8")) if outcomes_path.exists() else []
 

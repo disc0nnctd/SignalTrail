@@ -1,1 +1,12 @@
+# Required
 telethon>=1.28.0
+
+# Optional: additional market data sources (evaluate.py falls back to Yahoo Finance if absent)
+# nsemine          # NSE historical data via nsemine
+# jugaad-data      # NSE historical data via jugaad
+# Technical        # NSE enrichment data (P/E, delivery%, circuit limits) via bharat/Technical
+
+# Optional: Alpha Vantage daily candles (set HERMES_ALPHA_VANTAGE_API_KEY or ALPHA_VANTAGE_API_KEY)
+# No extra package needed — uses built-in urllib
+
+# Yahoo Finance is the default fallback and requires no extra package (uses built-in urllib)

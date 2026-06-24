@@ -21,7 +21,7 @@ FYERS_HISTORY_URLS = [
     "https://api-t1.fyers.in/data/history",
     "https://api.fyers.in/data-rest/v3/history",
 ]
-USER_AGENT = "hermes-autonomous-paper-trader/1.0"
+USER_AGENT = "signaltrail/1.0"
 _CANDLE_CACHE = Path(os.environ.get("SIGNALTRAIL_CACHE_DIR", Path(__file__).parent.parent / ".cache")) / "candle-cache.sqlite3"
 _NSEMINE_SYMBOL_MAP_PATH = Path(os.environ.get("SIGNALTRAIL_CACHE_DIR", Path(__file__).parent.parent / ".cache")) / "nsemine-symbol-map.json"
 _NSE_EQUITY_LIST_CACHE = Path(os.environ.get("SIGNALTRAIL_CACHE_DIR", Path(__file__).parent.parent / ".cache")) / "nse-equity-list.csv"
@@ -598,7 +598,12 @@ def _load_key_file_env_once() -> None:
     if _FYERS_ENV_LOADED:
         return
     _FYERS_ENV_LOADED = True
-    key_file = Path("/home/notdc/Keys/.env.keys")
+    # Configurable via SIGNALTRAIL_KEY_FILE env var; no default path to avoid
+    # loading credentials from unexpected locations on other machines.
+    key_file_path = os.environ.get("SIGNALTRAIL_KEY_FILE", "")
+    if not key_file_path:
+        return
+    key_file = Path(key_file_path)
     if not key_file.exists():
         return
     try:

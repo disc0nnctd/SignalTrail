@@ -8,6 +8,46 @@ and publishes a masked public leaderboard.
 
 ---
 
+## Prerequisites
+
+- Python 3.10+
+- A Telegram account with API access (register at https://my.telegram.org/apps)
+- Git + GitHub account (for the public Pages dashboard)
+- Optional: Ollama (local LLM verifier) or an OpenAI-compatible API key (LLM extractor)
+
+---
+
+## Architecture
+
+```
+channels.json
+    │
+    ▼
+scripts/evaluate.py          ← Telegram fetch + rule-based parser + scorer
+    │   └─ (optional) scripts/extract_calls_llm.py  ← LLM extractor pass
+    │
+    ▼
+data/output/
+    ├── messages.json        ← raw Telegram messages (gitignored)
+    ├── outcomes.json        ← per-call outcome rows
+    ├── scores.json          ← per-channel scores
+    └── summary.json         ← full ranked leaderboard
+    │
+    ▼
+scripts/import-telegram-quality.py  ← masks identities, applies min-sample filter
+    │
+    ▼
+leaderboard-public.json      ← committed to main, served by GitHub Pages
+    │
+    ▼
+public/                      ← static dashboard (HTML/JS/CSS)
+```
+
+signaltrail/ contains shared library code (market data fetching, scoring logic).
+See [DEPLOY.md](DEPLOY.md) for the full deployment walkthrough.
+
+---
+
 ## How it works
 
 1. **Fetch** — `evaluate.py` connects to Telegram via your own MTProto session and pulls messages from the channels listed in `channels.json`.
@@ -16,6 +56,8 @@ and publishes a masked public leaderboard.
 4. **Publish** — `leaderboard-public.json` is written with identities masked (3 known public channels shown by name, all others as `****`).
 
 ---
+
+> For a complete prerequisites + deployment walkthrough see [DEPLOY.md](DEPLOY.md).
 
 ## Setup
 
@@ -143,11 +185,15 @@ Edit `channels.json`:
 
 ## GitHub Pages deployment
 
-The static dashboard (`index.html` + `app.js`) is served directly from the repo root.
+The static dashboard lives in `public/`. The included workflow (`.github/workflows/pages.yml`)
+deploys the `public/` directory automatically on every push to `main`.
 
-1. Push `leaderboard-public.json` to `main`
-2. Go to repo **Settings → Pages → Source: Deploy from branch → main / root**
+1. Push `public/leaderboard-public.json` (or run `evaluate.py` and copy the output) to `main`
+2. Go to repo **Settings → Pages → Source: GitHub Actions**
 3. The site goes live at `https://<username>.github.io/<repo>`
+
+> If you prefer a manual branch-based setup, set source to **Deploy from branch → main / `public`**
+> (not root — the HTML files live under `public/`).
 
 ---
 

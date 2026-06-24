@@ -1331,16 +1331,19 @@ def main() -> int:
 
     sources = cfg.get("telegram", {}).get("sources") or []
     since = datetime.now(UTC) - timedelta(days=args.lookback_days)
-    messages = asyncio.run(
-        fetch_messages(
-            int(api_id),
-            api_hash,
-            session_path,
-            sources,
-            since,
-            int(args.max_messages_per_channel),
+    try:
+        messages = asyncio.run(
+            fetch_messages(
+                int(api_id),
+                api_hash,
+                session_path,
+                sources,
+                since,
+                int(args.max_messages_per_channel),
+            )
         )
-    )
+    except Exception as exc:
+        raise SystemExit(f"Telegram fetch failed: {exc}") from exc
     parsed = parse_calls(
         messages,
         symbol_map,

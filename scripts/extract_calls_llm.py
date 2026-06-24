@@ -132,7 +132,7 @@ def main() -> int:
                 endpoint=args.endpoint,
                 timeout=int(args.timeout_sec),
             )
-        except (HTTPError, URLError, TimeoutError, OSError, KeyError, json.JSONDecodeError) as exc:
+        except (HTTPError, URLError, TimeoutError, OSError, KeyError, IndexError, json.JSONDecodeError) as exc:
             out_rows.append({
                 "message_id": msg.get("message_id"),
                 "channel": msg.get("channel_handle") or msg.get("channel") or None,
