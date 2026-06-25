@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-SYSTEM_PROMPT = """You extract structured trading calls from Telegram messages.
+SYSTEM_PROMPT = """You extract structured trading calls from Indian market Telegram messages.
 Return strict JSON only with this schema:
 {
   "is_call": boolean,
@@ -31,6 +31,13 @@ Return strict JSON only with this schema:
   "target": number|null,
   "stop_loss": number|null,
   "call_type": "trade_plan"|"partial_plan"|"directional"|"non_actionable",
+  "instrument_type": "equity"|"options"|"futures"|"index"|"unknown",
+  "options_details": {
+    "underlying": string|null,
+    "strike": number|null,
+    "option_type": "CE"|"PE"|null,
+    "expiry": "weekly"|"monthly"|string|null
+  }|null,
   "confidence": number,
   "reason": string
 }
@@ -38,6 +45,11 @@ Rules:
 - If ambiguous or non-actionable, set is_call=false and call_type=non_actionable.
 - Do not invent levels not present in the text.
 - Confidence is 0..1 and should drop for ambiguous language.
+- For equity calls: symbol is the NSE ticker (e.g. RELIANCE, INFY, TCS).
+- For options calls (containing CE/PE): set instrument_type=options, populate options_details with underlying index/stock, strike price, CE or PE, and expiry if mentioned. entry/target/stop_loss are the PREMIUM prices, not the underlying price.
+- For index directional calls (NIFTY/BANKNIFTY without CE/PE): set instrument_type=index, symbol=NIFTY or BANKNIFTY, entry/target/stop_loss are index levels.
+- For futures calls (FUT/futures mentioned): set instrument_type=futures.
+- options_details is null for non-options calls.
 """
 
 
