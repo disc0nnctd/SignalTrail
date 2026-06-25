@@ -273,6 +273,10 @@ def _validated_llm_levels(
     return entry, stop_loss, target
 
 
+_OPTIONS_PAT = re.compile(r"\b\d{4,6}\s*(?:CE|PE)\b|\b(?:CE|PE)\s*\d{4,6}\b", re.I)
+_INDEX_PAT = re.compile(r"\b(?:NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY)\b", re.I)
+
+
 def _should_attempt_llm_extract(
     verifier_verdict: str,
     parser_confidence: float,
@@ -280,9 +284,16 @@ def _should_attempt_llm_extract(
     entry_hint: float | None,
     stop_hint: float | None,
     target_hint: float | None,
+    raw_text: str = "",
 ) -> bool:
     if verifier_verdict == "reject":
         return False
+    # Always use LLM for options calls — regex can't distinguish premium vs underlying
+    if _OPTIONS_PAT.search(raw_text):
+        return True
+    # Use LLM for index directional calls (NIFTY/BANKNIFTY without CE/PE)
+    if _INDEX_PAT.search(raw_text) and not symbols:
+        return True
     if not symbols:
         return True
     if parser_confidence < 0.85:
@@ -944,6 +955,7 @@ def parse_calls(
             entry_hint,
             stop_hint,
             target_hint,
+            raw_text=text,
         ):
             try:
                 extracted = llm_extract_call_openai_compatible(
