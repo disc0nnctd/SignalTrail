@@ -40,6 +40,15 @@ ABOVE_PAT = re.compile(r"\babove\s+(\d+(?:\.\d+)?)", re.I)
 BELOW_PAT = re.compile(r"\bbelow\s+(\d+(?:\.\d+)?)", re.I)
 TOKEN_PAT = re.compile(r"\b[A-Z]{2,20}\b")
 
+# Word-boundary intent patterns. The bare-substring checks they replace matched
+# 'along'/'belong' as long (bullish) and 'exiting'/'shortage' as sell tokens,
+# turning news headlines into spurious trade calls. Genuine inflections (buying,
+# selling, exits) are kept; the gerund 'exiting' is rejected because it is the
+# form most often used in non-actionable news ('BlackRock exiting investment').
+BUY_INTENT_PAT = re.compile(r"\b(?:buy(?:ing|s)?|long|accumulate(?:s|d)?|breakouts?)\b", re.I)
+SELL_INTENT_PAT = re.compile(r"\b(?:sell(?:ing|s|er|ers)?|short|exit(?:s|ed)?|avoid(?:s|ed)?)\b", re.I)
+WAIT_WORD_PAT = re.compile(r"\b(?:wait(?:ing|s)?|watch(?:es|ing)?)\b", re.I)
+
 
 @dataclass
 class ParsedCall:
@@ -94,9 +103,10 @@ def parse_num(pat: re.Pattern[str], text: str) -> float | None:
 
 def classify_intent(text: str) -> Tuple[str, str, float]:
     lowered = text.lower()
-    has_buy = any(t in lowered for t in BUY_TOKENS)
-    has_sell = any(t in lowered for t in SELL_TOKENS)
-    has_wait = any(t in lowered for t in WAIT_TOKENS)
+    has_buy = bool(BUY_INTENT_PAT.search(text))
+    has_sell = bool(SELL_INTENT_PAT.search(text))
+    # Multi-word wait/negation phrases still need substring matching.
+    has_wait = any(t in lowered for t in WAIT_TOKENS) or bool(WAIT_WORD_PAT.search(text))
     conditional = any(t in lowered for t in CONDITIONAL_TOKENS)
 
     if has_wait and not has_buy and not has_sell:
@@ -121,7 +131,7 @@ def verify_message_intent(text: str, intent: str, direction: str) -> Tuple[str, 
     if "don't buy" in lowered or "do not buy" in lowered or "not buy" in lowered:
         if intent in {"buy_now", "conditional_buy"}:
             return "reject", "negated_buy_phrase"
-    if "wait" in lowered and intent in {"buy_now", "sell_now"}:
+    if WAIT_WORD_PAT.search(text) and intent in {"buy_now", "sell_now"}:
         return "reject", "wait_phrase_conflict"
     if intent in {"conditional_buy", "conditional_sell"} and not ("above" in lowered or "below" in lowered):
         return "review", "conditional_without_explicit_trigger"
