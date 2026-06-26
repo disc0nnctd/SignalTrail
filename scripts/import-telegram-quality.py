@@ -4,25 +4,20 @@
 Input:  data/output/summary.json  (default; override with --input)
 Output: public/leaderboard-public.json  (default; override with --out)
 
-This intentionally publishes only aggregate metrics. Do not publish raw private
-messages or personal data without a separate review process.
+This intentionally publishes masked aggregate metrics plus short sanitized call
+excerpts for auditability. Do not publish raw private messages or personal data
+without a separate review process.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from collections import defaultdict
-
-
-def tier_for(row: dict[str, Any]) -> str:
-    calls = int(row.get("calls_count") or 0)
-    if calls < 20:
-        return "IS"
-    return str(row.get("tier") or "D")
 
 
 def pct(value: Any) -> float | None:
@@ -34,9 +29,22 @@ def pct(value: Any) -> float | None:
         return None
 
 
-def random_mask() -> str:
-    import random
-    return "*" * random.randint(4, 8)
+def public_row_key(seed: str) -> str:
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def codename(seed: str) -> str:
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:6].upper()
+    return f"Source-{digest}"
+
+
+def public_message_excerpt(text: Any, limit: int = 220) -> str:
+    cleaned = str(text or "").replace("\n", " ").strip()
+    cleaned = re.sub(r"https?://\S+|t\.me/\S+", "[link]", cleaned, flags=re.I)
+    cleaned = re.sub(r"@\w+", "[handle]", cleaned)
+    cleaned = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", "[email]", cleaned)
+    cleaned = re.sub(r"\b(?:\+?91[-\s]?)?[6-9]\d{9}\b", "[phone]", cleaned)
+    return cleaned[:limit]
 
 
 PUBLIC_CHANNEL_LABELS: dict[str, str] = {
@@ -47,7 +55,7 @@ PUBLIC_CHANNEL_LABELS: dict[str, str] = {
 
 
 def channel_label(handle: str) -> str:
-    return PUBLIC_CHANNEL_LABELS.get(handle, random_mask())
+    return PUBLIC_CHANNEL_LABELS.get(handle, codename(handle or "channel"))
 
 
 def build_breakdown_samples(outcomes: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
@@ -59,24 +67,37 @@ def build_breakdown_samples(outcomes: list[dict[str, Any]], limit: int = 8) -> l
             continue
         seen.add(call_id)
         exit_reason = str(item.get("exit_reason") or "").strip().lower()
-        author_raw = str(item.get("author_name") or item.get("channel_handle") or item.get("author_id") or "Unknown")
         samples.append({
-            "author_alias": random_mask(),
+            "author_alias": codename(str(item.get("author_id") or item.get("author_name") or "")),
             "channel_alias": channel_label(str(item.get("channel_handle") or "")),
-            "symbol": item.get("symbol"),
+            "symbol": item.get("display_symbol") or item.get("symbol"),
+            "instrument_type": item.get("instrument_type"),
             "direction": item.get("direction"),
             "evaluation_window": item.get("evaluation_window"),
             "evaluation_method": item.get("evaluation_method"),
             "outcome": item.get("label"),
+            "outcome_credit": item.get("outcome_credit"),
             "exit_reason": item.get("exit_reason"),
             "reached_target": exit_reason.startswith("target"),
             "reached_stop": exit_reason.startswith("stop"),
             "net_return_pct": item.get("net_return_pct"),
             "benchmark_excess_return_pct": item.get("benchmark_excess_return_pct"),
+            "message_excerpt": public_message_excerpt(item.get("text")),
+            "target_prices": item.get("target_prices"),
+            "targets_hit_count": item.get("targets_hit_count"),
+            "target_count": item.get("target_count"),
+            "exclude_from_performance": item.get("exclude_from_performance"),
+            "exclusion_reason": item.get("exclusion_reason"),
         })
         if len(samples) >= limit:
             break
     return samples
+
+
+def outcome_author_key(item: dict[str, Any]) -> str:
+    if item.get("author_id") is not None:
+        return str(item.get("author_id"))
+    return f"name:{item.get('author_name') or 'unknown'}"
 
 
 def main() -> int:
@@ -84,8 +105,8 @@ def main() -> int:
     ap.add_argument("--input", default="data/output/summary.json")
     ap.add_argument("--outcomes", default="data/output/outcomes.json")
     ap.add_argument("--out", default="public/leaderboard-public.json")
-    ap.add_argument("--min-public-calls", type=int, default=20)
-    ap.add_argument("--mask-identities", action=argparse.BooleanOptionalAction, default=False, help="Mask trader/channel identities for public-facing JSON.")
+    ap.add_argument("--min-public-calls", type=int, default=8)
+    ap.add_argument("--mask-identities", action=argparse.BooleanOptionalAction, default=True, help="Mask trader/channel identities for public-facing JSON.")
     args = ap.parse_args()
 
     input_path = Path(args.input)
@@ -108,7 +129,15 @@ def main() -> int:
         "target_stop_rows": 0,
         "resolved_target_stop_rows": 0,
     })
+    author_outcomes: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    same_bar_ambiguous_count = 0
     for item in outcomes_payload:
+        author_outcomes[outcome_author_key(item)].append(item)
+        author_name_key = str(item.get("author_name") or "").strip()
+        if author_name_key:
+            author_outcomes[author_name_key].append(item)
+        if item.get("same_bar_ambiguous"):
+            same_bar_ambiguous_count += 1
         if str(item.get("evaluation_method") or "") != "target_stop":
             continue
         author_keys = {
@@ -129,6 +158,7 @@ def main() -> int:
 
     author_rows = payload.get("rankings", {}).get("author_rankings", [])
     rows = []
+    drilldowns: dict[str, dict[str, Any]] = {}
     rank = 1
     for row in author_rows:
         metrics = row.get("metrics_v2") or {}
@@ -158,9 +188,29 @@ def main() -> int:
         raw_handle = id_to_handle.get(raw_key, raw_key)
         raw_name = str(row.get("display_name") or row.get("author_name") or raw_key or "Unknown")
         raw_channel = str(row.get("channel") or raw_handle or "aggregate")
-        display_name = random_mask() if args.mask_identities else raw_name
+        row_key = public_row_key(raw_key)
+        display_name = codename(raw_key) if args.mask_identities else raw_name
         channel_name = channel_label(raw_handle) if args.mask_identities else raw_channel
-        rows.append({
+        instrument_types = metrics.get("instrument_types") or {}
+        symbol_metrics = metrics.get("symbols") or {}
+        per_symbol = [
+            {
+                "symbol": symbol,
+                "rows_count": block.get("rows_count"),
+                "resolved_win_rate": block.get("resolved_win_rate"),
+                "expectancy": block.get("expectancy"),
+                "avg_return_pct": block.get("avg_return_pct", block.get("expectancy")),
+                "profit_factor": block.get("profit_factor"),
+                "excluded_rows_count": block.get("excluded_rows_count"),
+            }
+            for symbol, block in sorted(
+                symbol_metrics.items(),
+                key=lambda kv: int((kv[1] or {}).get("rows_count") or 0),
+                reverse=True,
+            )[:12]
+        ]
+        row_payload = {
+            "row_key": row_key,
             "rank": public_rank,
             "display_name": display_name,
             "channel": channel_name,
@@ -186,6 +236,8 @@ def main() -> int:
             "bayes_win_rate": call_metrics.get("bayes_win_rate"),
             "avg_r": call_metrics.get("expectancy"),
             "median_r": call_metrics.get("median_return"),
+            "avg_return_pct": call_metrics.get("avg_return_pct", call_metrics.get("expectancy")),
+            "median_return_pct": call_metrics.get("median_return_pct", call_metrics.get("median_return")),
             "profit_factor": call_metrics.get("profit_factor"),
             "timeout_rate": call_metrics.get("flat_rate"),
             "duplicate_rate": call_metrics.get("duplicate_rate"),
@@ -193,7 +245,78 @@ def main() -> int:
             "confidence": "insufficient_sample" if public_tier == "IS" else "eligible",
             "win_rate": call_metrics.get("resolved_win_rate"),
             "legacy_win_rate": row.get("win_rate"),
-        })
+            "instrument_breakdown": instrument_types,
+            "per_symbol_breakdown": per_symbol,
+            "excluded_rows_count": (metrics.get("counts") or {}).get("excluded_row_count"),
+            "options_no_premium_count": sum(
+                1 for item in author_outcomes.get(raw_key, []) if item.get("evaluation_method") == "options_no_premium_data"
+            ),
+            "continuation_update_count": sum(
+                1 for item in author_outcomes.get(raw_key, []) if item.get("evaluation_method") == "continuation_update"
+            ),
+        }
+        rows.append(row_payload)
+        drilldowns[row_key] = {
+            "row_key": row_key,
+            "display_name": display_name,
+            "channel": channel_name,
+            "tier": public_tier,
+            "confidence": row_payload["confidence"],
+            "calls_evaluated": calls,
+            "resolved_win_rate": row_payload["resolved_win_rate"],
+            "target_stop_win_rate": row_payload["target_stop_win_rate"],
+            "instrument_breakdown": instrument_types,
+            "per_symbol_breakdown": per_symbol,
+            "parsed_calls": [],
+        }
+        seen_calls: set[str] = set()
+        for item in sorted(author_outcomes.get(raw_key, []), key=lambda r: str(r.get("sent_at_utc") or ""), reverse=True):
+            call_id = str(item.get("call_id") or "").strip()
+            if not call_id or call_id in seen_calls:
+                continue
+            seen_calls.add(call_id)
+            drilldowns[row_key]["parsed_calls"].append({
+                "call_id": call_id,
+                "message_id": item.get("message_id"),
+                "message_ts_utc": item.get("sent_at_utc"),
+                "symbol": item.get("display_symbol") or item.get("symbol"),
+                "instrument_type": item.get("instrument_type"),
+                "underlying": item.get("underlying"),
+                "options_details": item.get("options_details"),
+                "direction": item.get("direction"),
+                "outcome": item.get("label"),
+                "outcome_credit": item.get("outcome_credit"),
+                "evaluation_method": item.get("evaluation_method"),
+                "evaluation_window": item.get("evaluation_window"),
+                "net_return_pct": item.get("net_return_pct"),
+                "benchmark_excess_return_pct": item.get("benchmark_excess_return_pct"),
+                "exclude_from_performance": item.get("exclude_from_performance"),
+                "exclusion_reason": item.get("exclusion_reason"),
+                "message_excerpt": public_message_excerpt(item.get("text")),
+                "parsed_fields": {
+                    "symbol": item.get("symbol"),
+                    "display_symbol": item.get("display_symbol"),
+                    "instrument_type": item.get("instrument_type"),
+                    "direction": item.get("direction"),
+                    "entry_hint": item.get("entry_hint"),
+                    "stop_hint": item.get("stop_hint"),
+                    "target_hint": item.get("target_hint"),
+                    "target_hints": item.get("target_hints"),
+                    "target_prices": item.get("target_prices"),
+                    "targets_hit_count": item.get("targets_hit_count"),
+                    "target_count": item.get("target_count"),
+                    "trigger_above": item.get("trigger_above"),
+                    "trigger_below": item.get("trigger_below"),
+                    "is_continuation": item.get("is_continuation"),
+                    "parent_call_id": item.get("parent_call_id"),
+                    "trailing_stop_rule": item.get("trailing_stop_rule"),
+                    "same_bar_policy": item.get("same_bar_policy"),
+                    "same_bar_ambiguous": item.get("same_bar_ambiguous"),
+                    "same_bar_alternate_exit_reason": item.get("same_bar_alternate_exit_reason"),
+                },
+            })
+            if len(drilldowns[row_key]["parsed_calls"]) >= 25:
+                break
 
     out = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
@@ -210,9 +333,13 @@ def main() -> int:
             "horizons_days": payload.get("horizons_days"),
             "prefer_target_stop": payload.get("prefer_target_stop"),
             "same_bar_policy": payload.get("same_bar_policy"),
+            "same_bar_ambiguous_count": same_bar_ambiguous_count,
+            "is_threshold": args.min_public_calls,
+            "sample_size_policy": f"Rows with fewer than {args.min_public_calls} scored calls are labelled IS.",
         },
         "metrics_v2": payload.get("metrics_v2"),
         "breakdown_samples": build_breakdown_samples(outcomes_payload),
+        "drilldowns": drilldowns,
         "rows": rows,
     }
     out_path = Path(args.out)

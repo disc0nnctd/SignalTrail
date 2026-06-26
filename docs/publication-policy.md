@@ -55,7 +55,7 @@ Before any public release:
 4. Confidence labels: visible (`IS` for insufficient sample).
 5. Correction channel: visible and actionable (see section above — **not yet configured**).
 6. Secondary moderation review: completed (**human decision required**).
-7. Public artifact check: if you do not want to publish raw source labels, export a masked public dataset instead of your local truth dataset.
+7. Public artifact check: publish only the masked public dataset, not local truth artifacts.
 
 If any item fails, do not publish.
 
@@ -79,9 +79,26 @@ A channel must be removed from the dataset and from any published leaderboard if
 
 Removed channels are excluded from future evaluations. Historical data already committed is not retroactively purged unless a legal obligation requires it.
 
+### Public artifact contents
+
+`leaderboard-public.json` may include:
+
+- Masked source aliases and aggregate performance metrics.
+- Instrument, symbol, target/stop, exclusion, and parsed-field summaries.
+- Short sanitized message excerpts for auditability, with links, handles, emails, and phone numbers redacted.
+
+`leaderboard-public.json` must not include:
+
+- Raw Telegram message text.
+- Telegram numeric user IDs or unmasked personal identities.
+- Phone numbers, email addresses, or direct contact handles.
+- Private, invite-only, or paywalled group content.
+
+The raw evaluation artifacts under `data/output/` are local truth artifacts and are not public artifacts.
+
 ### Masked channels
 
-Channels not designated as `approved_direct` in `channels.json` appear on the public leaderboard as `****`. Their handles and labels are never committed to `leaderboard-public.json`. The source-of-truth `channels.json` file is committed to the repo; deployers who want a fully anonymous dataset should fork and remove labels before publishing.
+Channels not designated as `approved_direct` in `channels.json` appear on the public leaderboard as masked aliases. Their handles and labels are not committed to `leaderboard-public.json` unless they are on the explicit public label allowlist. The source-of-truth `channels.json` file is committed to the repo; deployers who want a fully anonymous dataset should fork and remove labels before publishing.
 
 ## Privacy Considerations for Public Telegram Messages
 
@@ -94,6 +111,8 @@ Telegram channels operated in public mode make their content available without a
 **Not processed:** phone numbers, user IDs, profile photos, private group messages, direct messages, or any content from invite-only channels.
 
 Processed messages are stored in `data/output/messages.json` (gitignored by default). Do not commit this file — it contains raw message text that may include personal handles posted by channel operators.
+
+Public drilldowns may show sanitized excerpts to help users inspect parser behavior. These excerpts are not a substitute for source review, and any excerpt that cannot be safely redacted should be omitted rather than published.
 
 If a channel operator believes their content has been incorrectly included or that removal is required, they should submit a request via the correction channel listed on the public dashboard.
 

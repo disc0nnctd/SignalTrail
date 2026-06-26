@@ -58,7 +58,7 @@ PYTHONPATH=. python3 scripts/evaluate.py
 ```
 
 This writes:
-- `leaderboard-public.json` — masked public leaderboard (commit this for the dashboard)
+- `public/leaderboard-public.json` — masked public leaderboard consumed by the dashboard
 - `data/output/summary.json` — full ranked output with all metrics
 - `data/output/outcomes.json` — per-call outcome rows
 - `data/output/scores.json` — lightweight scores per channel/author
@@ -84,7 +84,7 @@ PYTHONPATH=. python3 scripts/evaluate.py \
 
 ## Deploy the dashboard to GitHub Pages
 
-1. Commit `leaderboard-public.json` (and the `public/` folder) to `main`
+1. Commit `public/leaderboard-public.json` and the rest of the `public/` folder to `main`
 2. Push to GitHub
 3. Go to **Settings → Pages → Source: GitHub Actions**
 4. The workflow in `.github/workflows/pages.yml` deploys the `public/` directory automatically
@@ -104,11 +104,11 @@ Edit `channels.json` and add entries under `telegram.sources`:
 ## Running in production (scheduled)
 
 The simplest approach is a cron job or systemd timer that runs `evaluate.py` daily and
-then commits and pushes `leaderboard-public.json`:
+then commits and pushes the served public artifact:
 
 ```bash
 # Example crontab entry (runs at 06:00 UTC)
-0 6 * * * cd /path/to/SignalAudit && PYTHONPATH=. python3 scripts/evaluate.py && git add leaderboard-public.json && git commit -m "chore: update leaderboard" && git push
+0 6 * * * cd /path/to/SignalAudit && PYTHONPATH=. python3 scripts/evaluate.py && git add public/leaderboard-public.json && git commit -m "chore: update leaderboard" && git push
 ```
 
 ## First-run checklist
@@ -118,13 +118,13 @@ After completing the steps above, verify the following before treating the setup
 - [ ] `.env` exists and has non-placeholder values for `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`
 - [ ] `.cache/telegram.session` was created by `login.py` (confirms auth succeeded)
 - [ ] `evaluate.py` runs without error and writes `data/output/summary.json`
-- [ ] `leaderboard-public.json` is written at repo root
+- [ ] `public/leaderboard-public.json` is written and contains `drilldowns`
 - [ ] Opening `public/index.html` in a browser shows channels with data (not a blank table)
 - [ ] `public/` methodology and publication-policy links resolve correctly
 
 ## GitHub Pages setup
 
-1. Commit `leaderboard-public.json` and all `public/` files to `main`
+1. Commit `public/leaderboard-public.json` and all `public/` files to `main`
 2. Push to GitHub
 3. In your repo: **Settings → Pages → Source: GitHub Actions**
 4. The workflow at `.github/workflows/pages.yml` deploys `public/` on every push to `main`
@@ -137,7 +137,7 @@ If you prefer branch-based deploy without Actions: **Settings → Pages → Depl
 Before making the dashboard public, verify all items in `docs/publication-policy.md`:
 
 - [ ] Only public or permissioned Telegram channels in `channels.json`
-- [ ] `leaderboard-public.json` uses masked identities (this is the default)
+- [ ] `public/leaderboard-public.json` uses masked identities (this is the default)
 - [ ] Methodology link visible on the dashboard
 - [ ] Confidence labels (`IS` = insufficient sample) displayed
 - [ ] A correction/contact channel is listed on the public page (GitHub Issues recommended)

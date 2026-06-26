@@ -1,5 +1,6 @@
 const state = {
-  rows: [], sourceSummary: {}, metricsV2: {}, breakdownSamples: [],
+  rows: [], sourceSummary: {}, metricsV2: {}, breakdownSamples: [], drilldowns: {},
+  selectedRowKey: null, selectedCallId: null,
   sorts: { leaderboard: { key: 'calls_evaluated', dir: 'desc' }, breakdown: { key: 'net_return_pct', dir: 'desc' } }
 };
 const fallbackData = {
@@ -18,8 +19,8 @@ const fallbackData = {
     },
   },
   rows: [
-    { rank: 1, display_name: 'Source-9A8845', channel: 'masked', tier: 'IS', score: null, calls_evaluated: 14, rows_evaluated: 56, resolved_calls: 13, call_win_rate: 0.5, resolved_win_rate: 0.5385, row_win_rate: 0.3393, row_resolved_win_rate: 0.6552, benchmark_relative_win_rate: 0.4118, target_stop_win_rate: 1, target_hits: 8, stop_hits: 0, target_hit_rate: 1, stop_hit_rate: 0, avg_r: 11.3472, profit_factor: 24.7313, bayes_win_rate: 0.5, confidence: 'insufficient_sample' },
-    { rank: 2, display_name: 'Source-4BCE85', channel: 'masked', tier: 'IS', score: null, calls_evaluated: 9, rows_evaluated: 33, resolved_calls: 9, call_win_rate: 0.3333, resolved_win_rate: 0.3333, row_win_rate: 0.4242, row_resolved_win_rate: 0.6364, benchmark_relative_win_rate: 0.6364, target_stop_win_rate: 0, target_hits: 0, stop_hits: 0, target_hit_rate: null, stop_hit_rate: null, avg_r: -0.7599, profit_factor: 0.5207, bayes_win_rate: 0.4118, confidence: 'insufficient_sample' }
+    { rank: 1, display_name: 'Source-9A8845', channel: 'masked', tier: 'IS', score: null, calls_evaluated: 14, rows_evaluated: 56, resolved_calls: 13, call_win_rate: 0.5, resolved_win_rate: 0.5385, row_win_rate: 0.3393, row_resolved_win_rate: 0.6552, benchmark_relative_win_rate: 0.4118, target_stop_win_rate: 1, target_hits: 8, stop_hits: 0, target_hit_rate: 1, stop_hit_rate: 0, avg_return_pct: 11.3472, avg_r: 11.3472, profit_factor: 24.7313, bayes_win_rate: 0.5, confidence: 'insufficient_sample' },
+    { rank: 2, display_name: 'Source-4BCE85', channel: 'masked', tier: 'IS', score: null, calls_evaluated: 9, rows_evaluated: 33, resolved_calls: 9, call_win_rate: 0.3333, resolved_win_rate: 0.3333, row_win_rate: 0.4242, row_resolved_win_rate: 0.6364, benchmark_relative_win_rate: 0.6364, target_stop_win_rate: 0, target_hits: 0, stop_hits: 0, target_hit_rate: null, stop_hit_rate: null, avg_return_pct: -0.7599, avg_r: -0.7599, profit_factor: 0.5207, bayes_win_rate: 0.4118, confidence: 'insufficient_sample' }
   ],
 };
 
@@ -43,6 +44,8 @@ const weighted = (rows, key, weightKey) => {
 };
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const get = (obj, path, fallback = null) => path.split('.').reduce((acc, key) => (acc && acc[key] !== undefined ? acc[key] : undefined), obj) ?? fallback;
+const rowKey = (row) => row?.row_key || `${row?.display_name || ''}:${row?.channel || ''}`;
+const returnPctValue = (row) => row?.avg_return_pct ?? row?.avg_r;
 
 const RED_FLAG_LABELS = {
   no_sebi_number_shown: 'No reg#',
@@ -107,7 +110,7 @@ function overallStats(rows) {
     rowResolvedWin: weighted(rows, 'row_resolved_win_rate', 'rows_evaluated'),
     directionalWin: weighted(rows, 'benchmark_relative_win_rate', 'rows_evaluated'),
     bayesWin: weighted(rows, 'bayes_win_rate', 'calls_evaluated'),
-    avgR: avg(rows, 'avg_r'),
+    avgReturn: avg(rows.map(row => ({ avg_return_pct: returnPctValue(row) })), 'avg_return_pct'),
     profitFactor: avg(rows, 'profit_factor'),
     targetHitRate: resolvedRows ? targetHits / resolvedRows : null,
     stopHitRate: resolvedRows ? stopHits / resolvedRows : null,
@@ -121,7 +124,7 @@ function statCard(label, value, note) {
 }
 
 function sortValue(row, key) {
-  const v = row?.[key];
+  const v = key === 'avg_return_pct' ? returnPctValue(row) : row?.[key];
   if (key === 'direction') return String(v || '').toLowerCase();
   if (v === null || v === undefined || v === '') return Number.NEGATIVE_INFINITY;
   const n = Number(v);
@@ -160,8 +163,9 @@ function renderSummary(data) {
     statCard('Row win', pct(row.win_rate ?? stats.rowWin), `Resolved-only ${pct(row.resolved_win_rate ?? stats.rowResolvedWin)}`),
     statCard('Target/stop win', pct(target.target_stop_win_rate ?? stats.targetHitRate), `${fmt(sum((data.rows || []).filter(r => Number(r.target_stop_rows) > 0), 'target_stop_rows'), 0)} target-plan rows`),
     statCard('Directional win', pct(directional.benchmark_relative_win_rate ?? stats.directionalWin), 'Versus benchmark'),
+    statCard('Sample threshold', fmt(source.is_threshold, 0), source.sample_size_policy || 'IS means insufficient sample'),
     statCard('Bayes win', pct(call.bayes_win_rate ?? stats.bayesWin), 'Shrinkage-adjusted'),
-    statCard('Avg R', `<span class="${Number(stats.avgR || 0) >= 0 ? 'good' : 'bad'}">${fmt(call.expectancy ?? stats.avgR, 2)}</span>`, `Median ${fmt(call.median_return, 2)} R`),
+    statCard('Avg return', `<span class="${Number(stats.avgReturn || 0) >= 0 ? 'good' : 'bad'}">${fmt(call.avg_return_pct ?? call.expectancy ?? stats.avgReturn, 2)}%</span>`, `Median ${fmt(call.median_return_pct ?? call.median_return, 2)}%`),
     statCard('Profit factor', fmt(call.profit_factor ?? stats.profitFactor, 2), 'Best sources float to the top'),
   ].join('');
 }
@@ -173,11 +177,11 @@ function renderInsight(rows, data) {
   const target = (metrics.methods || {}).target_stop || {};
   const directional = (metrics.methods || {}).directional_horizon || {};
   const top = [...rows].sort((a, b) => {
-    const scoreA = (Number(a.profit_factor) || 0) + (Number(a.resolved_win_rate) || 0) * 10 + (Number(a.avg_r) || 0) / 5;
-    const scoreB = (Number(b.profit_factor) || 0) + (Number(b.resolved_win_rate) || 0) * 10 + (Number(b.avg_r) || 0) / 5;
+    const scoreA = (Number(a.profit_factor) || 0) + (Number(a.resolved_win_rate) || 0) * 10 + (Number(returnPctValue(a)) || 0) / 5;
+    const scoreB = (Number(b.profit_factor) || 0) + (Number(b.resolved_win_rate) || 0) * 10 + (Number(returnPctValue(b)) || 0) / 5;
     return scoreB - scoreA;
   })[0];
-  const standout = top ? `${esc(top.display_name)} looks strongest in this public sample: ${pct(top.resolved_win_rate ?? top.call_win_rate)} resolved win, PF ${fmt(top.profit_factor, 2)}, and avg R ${fmt(top.avg_r, 2)}.` : 'No source data available.';
+  const standout = top ? `${esc(top.display_name)} looks strongest in this public sample: ${pct(top.resolved_win_rate ?? top.call_win_rate)} resolved win, PF ${fmt(top.profit_factor, 2)}, and avg return ${fmt(returnPctValue(top), 2)}%.` : 'No source data available.';
   const moreLikely = top && Number(top.resolved_win_rate) >= 0.5
     ? `${esc(top.display_name)} is the most likely to win more often than lose in the visible sample, based on resolved outcomes and risk-adjusted edge.`
     : 'No source in the current view clears the simple >50% resolved-win heuristic.';
@@ -201,7 +205,7 @@ function renderBarChart(rows, { title, subtitle, metric, formatValue, foot, filt
   const bars = items.length ? items.map((row, idx) => {
     const raw = Number(row?.[metric]) || 0;
     const width = clamp((raw / max) * 100, 8, 100);
-    const tone = metric === 'avg_r' || metric === 'benchmark_relative_win_rate' ? (raw >= 0 ? 'good' : 'warn') : '';
+    const tone = metric === 'avg_return_pct' || metric === 'benchmark_relative_win_rate' ? (raw >= 0 ? 'good' : 'warn') : '';
     return `
       <div class="bar-row">
         <div class="bar-top">
@@ -235,7 +239,7 @@ function renderCharts(rows, data) {
       subtitle: 'Strongest risk-adjusted sources.',
       metric: 'profit_factor',
       formatValue: (value) => `PF ${fmt(value, 2)}`,
-      foot: (row) => `Avg R ${fmt(row.avg_r, 2)}`,
+      foot: (row) => `Avg return ${fmt(returnPctValue(row), 2)}%`,
     }),
     renderBarChart(rows, {
       title: 'Top resolved win rate',
@@ -265,8 +269,8 @@ function renderBreakdown() {
     ['outcome', 'Outcome'],
     ['reached_target', 'Target?'],
     ['reached_stop', 'Stop?'],
-    ['net_return_pct', 'Net R'],
-    ['benchmark_excess_return_pct', 'Excess R'],
+    ['net_return_pct', 'Net %'],
+    ['benchmark_excess_return_pct', 'Excess %'],
   ];
   const rows = sortRows((state.breakdownSamples || []).slice(0, 10), 'breakdown');
   const head = `<thead><tr>${cols.map(([key, label]) => sortableTh('breakdown', key, label)).join('')}</tr></thead>`;
@@ -281,13 +285,15 @@ function renderLeaderboard(rows) {
     ['call_win_rate', 'Call Win %'], ['resolved_win_rate', 'Resolved Win %'], ['row_win_rate', 'Row Win %'],
     ['row_resolved_win_rate', 'Row Resolved Win %'], ['target_stop_win_rate', 'T/S Win %'],
     ['benchmark_relative_win_rate', 'Dir Win %'], ['bayes_win_rate', 'Bayes Win %'],
-    ['avg_r', 'Avg R'], ['profit_factor', 'PF'], ['confidence', 'Confidence'],
+    ['avg_return_pct', 'Avg Return'], ['profit_factor', 'PF'], ['confidence', 'Confidence'],
   ];
   const head = `<thead><tr>${cols.map(([key, label]) => sortableTh('leaderboard', key, label)).join('')}</tr></thead>`;
   const body = `<tbody>${rows.map((r, idx) => {
     const hasFlags = Array.isArray(r.red_flags) && r.red_flags.length > 0;
-    const rowClass = hasFlags ? ' class="row-flagged"' : '';
-    return `<tr${rowClass}>${cols.map(([key]) => `<td>${cell({ ...r, rank: r.rank ?? idx + 1 }, key)}</td>`).join('')}</tr>`;
+    const key = rowKey(r);
+    const classes = [hasFlags ? 'row-flagged' : '', state.selectedRowKey === key ? 'row-selected' : ''].filter(Boolean).join(' ');
+    const rowClass = classes ? ` class="${classes}"` : '';
+    return `<tr${rowClass} data-row-key="${esc(key)}">${cols.map(([colKey]) => `<td>${cell({ ...r, rank: r.rank ?? idx + 1 }, colKey)}</td>`).join('')}</tr>`;
   }).join('')}</tbody>`;
   document.getElementById('leaderboard').innerHTML = head + body;
 }
@@ -302,6 +308,7 @@ function render() {
     })
   , 'leaderboard');
   renderLeaderboard(rows);
+  renderDrilldown();
   renderInsight(rows, { sourceSummary: state.sourceSummary, source_summary: state.sourceSummary, metricsV2: state.metricsV2, metrics_v2: state.metricsV2 });
   renderSummary({ rows, sourceSummary: state.sourceSummary, metricsV2: state.metricsV2 });
   renderCharts(rows, { sourceSummary: state.sourceSummary, metricsV2: state.metricsV2 });
@@ -322,7 +329,7 @@ function cell(r, key) {
       ? `<div class="flag-row">${renderRedFlags(r.red_flags)}</div>` : '';
     const noteTitle = r.data_note ? ` title="${esc(r.data_note)}"` : '';
     const infoIcon = r.data_note ? `<span class="info-icon"${noteTitle}>ℹ</span>` : '';
-    return `<div class="trader-cell"><div class="trader-name">${name}${infoIcon}</div><div class="trader-meta">${channelLink}</div>${flags}</div>`;
+    return `<div class="trader-cell"><button type="button" class="trader-open" data-row-key="${esc(rowKey(r))}"><span class="trader-name">${name}${infoIcon}</span></button><div class="trader-meta">${channelLink}</div>${flags}</div>`;
   }
   if (key === 'tier') return `<span class="tier ${esc(r.tier)}">${esc(r.tier)}</span>`;
   if (key === 'call_win_rate') return pct(r.call_win_rate ?? r.win_rate);
@@ -335,10 +342,10 @@ function cell(r, key) {
   if (key === 'target_hit_rate') return pct(r.target_hit_rate);
   if (key === 'stop_hit_rate') return pct(r.stop_hit_rate);
   if (key === 'timeout_rate') return pct(r[key]);
-  if (key === 'avg_r') {
-    const v = r[key];
+  if (key === 'avg_return_pct') {
+    const v = returnPctValue(r);
     if (v === null || v === undefined) return '-';
-    return `<span class="${Number(v) >= 0 ? 'good' : 'bad'}">${fmt(v, 2)}</span>`;
+    return `<span class="${Number(v) >= 0 ? 'good' : 'bad'}">${fmt(v, 2)}%</span>`;
   }
   if (key === 'profit_factor' || key === 'score') return fmt(r[key], 2);
   if (key === 'rank') return r.rank ?? '<span class="muted">—</span>';
@@ -347,6 +354,7 @@ function cell(r, key) {
     const cls = r.confidence === 'eligible' ? 'conf-eligible' : r.confidence === 'no_evaluable_calls' ? 'conf-none' : 'conf-is';
     return `<span class="conf-badge ${cls}">${esc(r.confidence ?? '—')}</span>`;
   }
+  if (key === 'instrument_breakdown') return renderInstrumentMini(r.instrument_breakdown);
   return esc(r[key]);
 }
 
@@ -379,6 +387,106 @@ function breakdownCell(r, key) {
   return esc(r[key] ?? '-');
 }
 
+function renderInstrumentMini(breakdown) {
+  if (!breakdown || typeof breakdown !== 'object') return '-';
+  return Object.entries(breakdown)
+    .map(([name, block]) => `${esc(name)} ${fmt(block?.rows_count, 0)}`)
+    .join(' · ') || '-';
+}
+
+function renderDrilldown() {
+  const mount = document.getElementById('drilldown');
+  const key = state.selectedRowKey;
+  if (!key) {
+    mount.hidden = true;
+    mount.innerHTML = '';
+    return;
+  }
+  const row = (state.rows || []).find(item => rowKey(item) === key);
+  const detail = state.drilldowns?.[key] || {};
+  const calls = Array.isArray(detail.parsed_calls) ? detail.parsed_calls : [];
+  if (!row && !calls.length) {
+    mount.hidden = true;
+    mount.innerHTML = '';
+    return;
+  }
+  mount.hidden = false;
+  const title = detail.display_name || row?.display_name || 'Selected source';
+  const channel = detail.channel || row?.channel || '-';
+  const perSymbol = Array.isArray(row?.per_symbol_breakdown) ? row.per_symbol_breakdown : [];
+  const symbolRows = perSymbol.slice(0, 6).map(item => `
+    <tr>
+      <td>${esc(item.symbol)}</td>
+      <td>${fmt(item.rows_count, 0)}</td>
+      <td>${pct(item.resolved_win_rate)}</td>
+      <td>${fmt(item.avg_return_pct ?? item.expectancy, 2)}%</td>
+    </tr>
+  `).join('');
+  mount.innerHTML = `
+    <div class="card-head">
+      <div>
+        <h2>${esc(title)}</h2>
+        <span class="muted">${esc(channel)} · ${fmt(row?.calls_evaluated ?? detail.calls_evaluated, 0)} calls · ${esc(row?.confidence || detail.confidence || '-')}</span>
+      </div>
+      <button type="button" class="button button-sm" data-close-drilldown>Close</button>
+    </div>
+    <div class="drilldown-body">
+      <div class="drilldown-stats">
+        ${statCard('Resolved win', pct(row?.resolved_win_rate ?? detail.resolved_win_rate), 'Partial targets count fractionally')}
+        ${statCard('Target/stop', pct(row?.target_stop_win_rate ?? detail.target_stop_win_rate), 'Same-bar ambiguity is flagged')}
+        ${statCard('Options excluded', fmt(row?.options_no_premium_count, 0), 'No premium data, not scored')}
+        ${statCard('Updates linked', fmt(row?.continuation_update_count, 0), 'Not counted as fresh calls')}
+      </div>
+      <div class="drilldown-grid">
+        <section>
+          <h3>Parsed calls</h3>
+          ${renderParsedCalls(calls)}
+        </section>
+        <section>
+          <h3>Symbol breakdown</h3>
+          <div class="table-wrap small-table">
+            <table>
+              <thead><tr><th>Symbol</th><th>Rows</th><th>Resolved</th><th>Avg return</th></tr></thead>
+              <tbody>${symbolRows || '<tr><td colspan="4" class="muted">No symbol breakdown available.</td></tr>'}</tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </div>
+  `;
+}
+
+function renderParsedCalls(calls) {
+  if (!calls.length) return '<p class="muted">No parsed call examples available for this row.</p>';
+  return `<div class="parsed-call-list">${calls.map(call => {
+    const expanded = state.selectedCallId === call.call_id;
+    const excluded = call.exclude_from_performance ? `<span class="conf-badge conf-is">${esc(call.exclusion_reason || 'excluded')}</span>` : '';
+    return `
+      <article class="parsed-call">
+        <button type="button" class="parsed-call-head" data-call-id="${esc(call.call_id)}">
+          <span>${esc(call.symbol || '-')} · ${esc(call.instrument_type || '-')} · ${esc(call.direction || '-')}</span>
+          <span>${esc(call.outcome || '-')} ${excluded}</span>
+        </button>
+        ${expanded ? renderParsedCallDetails(call) : ''}
+      </article>
+    `;
+  }).join('')}</div>`;
+}
+
+function renderParsedCallDetails(call) {
+  const fields = call.parsed_fields || {};
+  const fieldRows = Object.entries(fields)
+    .filter(([, value]) => value !== null && value !== undefined && value !== '')
+    .map(([key, value]) => `<dt>${esc(key.replaceAll('_', ' '))}</dt><dd>${esc(Array.isArray(value) ? value.join(', ') : value)}</dd>`)
+    .join('');
+  return `
+    <div class="parsed-call-detail">
+      <dl class="parsed-grid">${fieldRows || '<dt>Fields</dt><dd class="muted">No parsed fields available.</dd>'}</dl>
+      <pre class="raw-message">${esc(call.message_excerpt || '')}</pre>
+    </div>
+  `;
+}
+
 function sortableTh(tableName, key, label) {
   const sort = state.sorts[tableName] || {};
   const active = sort.key === key;
@@ -407,6 +515,7 @@ async function main() {
   state.sourceSummary = data.source_summary || data.sourceSummary || {};
   state.metricsV2 = data.metrics_v2 || data.metricsV2 || {};
   state.breakdownSamples = data.breakdown_samples || data.breakdownSamples || [];
+  state.drilldowns = data.drilldowns || {};
   if (state.rows.length && !document.getElementById('generated').textContent.startsWith('Using fallback example data')) {
     document.getElementById('generated').textContent = `Generated: ${data.generated_at_utc || '-'}`;
   }
@@ -416,9 +525,31 @@ async function main() {
 document.getElementById('search').addEventListener('input', render);
 document.getElementById('tierFilter').addEventListener('change', render);
 document.getElementById('leaderboard').addEventListener('click', (event) => {
+  const open = event.target.closest('[data-row-key]');
+  if (open && !event.target.closest('th')) {
+    const key = open.dataset.rowKey;
+    state.selectedRowKey = state.selectedRowKey === key ? null : key;
+    state.selectedCallId = null;
+    render();
+    return;
+  }
   const th = event.target.closest('th[data-sort-table][data-sort-key]');
   if (!th || th.dataset.sortTable !== 'leaderboard') return;
   toggleSort(th.dataset.sortTable, th.dataset.sortKey);
+});
+document.getElementById('drilldown').addEventListener('click', (event) => {
+  const close = event.target.closest('[data-close-drilldown]');
+  if (close) {
+    state.selectedRowKey = null;
+    state.selectedCallId = null;
+    render();
+    return;
+  }
+  const call = event.target.closest('[data-call-id]');
+  if (!call) return;
+  const id = call.dataset.callId;
+  state.selectedCallId = state.selectedCallId === id ? null : id;
+  renderDrilldown();
 });
 document.getElementById('breakdown').addEventListener('click', (event) => {
   const th = event.target.closest('th[data-sort-table][data-sort-key]');

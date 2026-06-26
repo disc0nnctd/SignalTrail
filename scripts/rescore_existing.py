@@ -8,16 +8,17 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 from signaltrail.market_data import Candle, fetch_candles
 from scripts.evaluate import (
+    SCORABLE_INTENTS,
+    excluded_outcome,
     outcome_for_call,
     parse_calls,
+    pre_market_exclusion_reason,
     score_bucket,
-    build_rankings,
-    _write_leaderboard,
 )
 
 
@@ -52,37 +53,42 @@ def main() -> int:
     candle_cache: dict[str, list[Candle]] = {}
     outcomes = []
     for call in parsed:
-        if call.intent not in {"buy_now", "sell_now", "conditional_buy", "conditional_sell"}:
-            continue
-        if call.symbol not in candle_cache:
-            try:
-                candle_cache[call.symbol] = fetch_candles(call.symbol, "2y", "1d")
-            except Exception:
-                continue
         try:
             sent = datetime.fromisoformat(call.sent_at_utc)
             if sent.tzinfo is None:
                 sent = sent.replace(tzinfo=UTC)
         except ValueError:
             continue
-        call_outcomes = outcome_for_call(
-            symbol=call.symbol,
-            direction=call.direction,
-            sent_at=sent,
-            horizons=horizons,
-            symbol_candles=candle_cache[call.symbol],
-            benchmark_candles=bench_candles,
-            win_thresh_pct=0.01,
-            loss_thresh_pct=-0.01,
-            intent=call.intent,
-            entry_hint=call.entry_hint,
-            stop_hint=call.stop_hint,
-            target_hint=call.target_hint,
-            trigger_above=call.trigger_above,
-            trigger_below=call.trigger_below,
-            prefer_target_stop=True,
-            same_bar_policy="stop_first",
-        )
+        exclusion_reason = pre_market_exclusion_reason(call)
+        if exclusion_reason:
+            call_outcomes = [excluded_outcome(exclusion_reason)]
+        else:
+            if call.intent not in SCORABLE_INTENTS:
+                continue
+            if call.symbol not in candle_cache:
+                try:
+                    candle_cache[call.symbol] = fetch_candles(call.symbol, "2y", "1d")
+                except Exception:
+                    continue
+            call_outcomes = outcome_for_call(
+                symbol=call.symbol,
+                direction=call.direction,
+                sent_at=sent,
+                horizons=horizons,
+                symbol_candles=candle_cache[call.symbol],
+                benchmark_candles=bench_candles,
+                win_thresh_pct=0.01,
+                loss_thresh_pct=-0.01,
+                intent=call.intent,
+                entry_hint=call.entry_hint,
+                stop_hint=call.stop_hint,
+                target_hint=call.target_hint,
+                target_hints=call.target_hints,
+                trigger_above=call.trigger_above,
+                trigger_below=call.trigger_below,
+                prefer_target_stop=True,
+                same_bar_policy="stop_first",
+            )
         for row in call_outcomes:
             outcomes.append({
                 "call_id": call.call_id,
@@ -93,6 +99,10 @@ def main() -> int:
                 "author_name": call.author_name,
                 "sent_at_utc": call.sent_at_utc,
                 "symbol": call.symbol,
+                "display_symbol": call.display_symbol,
+                "instrument_type": call.instrument_type,
+                "underlying": call.underlying,
+                "options_details": call.options_details,
                 "direction": call.direction,
                 "intent": call.intent,
                 "call_type": call.call_type,
@@ -100,8 +110,12 @@ def main() -> int:
                 "entry_hint": call.entry_hint,
                 "stop_hint": call.stop_hint,
                 "target_hint": call.target_hint,
+                "target_hints": call.target_hints,
                 "trigger_above": call.trigger_above,
                 "trigger_below": call.trigger_below,
+                "is_continuation": call.is_continuation,
+                "parent_call_id": call.parent_call_id,
+                "trailing_stop_rule": call.trailing_stop_rule,
                 "text": call.text,
                 "verifier_verdict": call.verifier_verdict,
                 "verifier_reason": call.verifier_reason,

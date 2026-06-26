@@ -37,10 +37,10 @@ data/output/
 scripts/import-telegram-quality.py  ← masks identities, applies min-sample filter
     │
     ▼
-leaderboard-public.json      ← committed to main, served by GitHub Pages
+public/leaderboard-public.json  ← committed with the static dashboard
     │
     ▼
-public/                      ← static dashboard (HTML/JS/CSS)
+public/                         ← static dashboard (HTML/JS/CSS)
 ```
 
 signaltrail/ contains shared library code (market data fetching, scoring logic).
@@ -53,7 +53,7 @@ See [DEPLOY.md](DEPLOY.md) for the full deployment walkthrough.
 1. **Fetch** — `evaluate.py` connects to Telegram via your own MTProto session and pulls messages from the channels listed in `channels.json`.
 2. **Parse** — A rule-based parser extracts directional calls (buy/sell), symbols, entry/stop/target levels. Optional LLM pass improves extraction on noisy messages.
 3. **Score** — Each parsed call is evaluated against Yahoo Finance daily candles at 1d/3d/5d/10d horizons with benchmark-relative excess return.
-4. **Publish** — `leaderboard-public.json` is written with identities masked (3 known public channels shown by name, all others as `****`).
+4. **Publish** — `public/leaderboard-public.json` is written with identities masked and sanitized call excerpts for auditability.
 
 ---
 
@@ -96,7 +96,7 @@ PYTHONPATH=. python3 scripts/evaluate.py
 ```
 
 This writes:
-- `leaderboard-public.json` — masked public leaderboard (commit this for GitHub Pages)
+- `public/leaderboard-public.json` — masked public leaderboard consumed by the static dashboard
 - `data/output/summary.json` — full ranked output with all metrics
 - `data/output/outcomes.json` — per-call outcome rows
 - `data/output/scores.json` — lightweight scores per channel/author
@@ -109,7 +109,7 @@ This writes:
 | `--max-messages-per-channel` | 600 | Cap per channel |
 | `--horizons` | `1,3,5,10` | Evaluation windows in trading days |
 | `--benchmark-symbol` | `NIFTYBEES.NS` | Benchmark for excess return |
-| `--leaderboard-out` | `leaderboard-public.json` | Output path for masked leaderboard |
+| `--leaderboard-out` | `public/leaderboard-public.json` | Output path for masked leaderboard |
 | `--win-threshold-pct` | 1.0 | Min excess return % to count as win |
 | `--loss-threshold-pct` | -1.0 | Max excess return % to count as loss |
 
@@ -188,7 +188,7 @@ Edit `channels.json`:
 The static dashboard lives in `public/`. The included workflow (`.github/workflows/pages.yml`)
 deploys the `public/` directory automatically on every push to `main`.
 
-1. Push `public/leaderboard-public.json` (or run `evaluate.py` and copy the output) to `main`
+1. Run `evaluate.py` or `run_pipeline.sh`, then commit `public/leaderboard-public.json` with the rest of `public/`
 2. Go to repo **Settings → Pages → Source: GitHub Actions**
 3. The site goes live at `https://<username>.github.io/<repo>`
 

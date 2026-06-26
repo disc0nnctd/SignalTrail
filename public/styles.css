@@ -94,10 +94,28 @@ td { color:#dce8f8; }
 .row-flagged { background:rgba(239,68,68,.04); }
 /* Trader cell */
 .trader-cell { display:flex; flex-direction:column; gap:3px; min-width:200px; }
+.trader-open { all:unset; cursor:pointer; display:inline-flex; align-items:center; width:max-content; max-width:100%; }
+.trader-open:hover .trader-name { color:var(--accent); }
 .trader-name { font-weight:700; color:#dce8f8; }
 .trader-meta { display:flex; align-items:center; gap:6px; }
 .channel-link { color:var(--accent); font-size:12px; text-decoration:none; font-family:ui-monospace,monospace; }
 .channel-link:hover { text-decoration:underline; }
+.row-selected { background:rgba(56,189,248,.08); }
+.drilldown-card { margin-top:18px; }
+.drilldown-body { padding:18px 20px 22px; display:grid; gap:18px; }
+.drilldown-stats { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; }
+.drilldown-grid { display:grid; grid-template-columns:minmax(0, 1.4fr) minmax(300px, .6fr); gap:16px; align-items:start; }
+.drilldown-grid h3 { margin:0 0 10px; }
+.parsed-call-list { display:grid; gap:10px; }
+.parsed-call { border:1px solid rgba(158,176,199,.16); border-radius:10px; background:rgba(13,23,40,.55); overflow:hidden; }
+.parsed-call-head { all:unset; cursor:pointer; display:flex; justify-content:space-between; gap:12px; width:100%; padding:12px 14px; font-weight:800; }
+.parsed-call-head:hover { background:rgba(56,189,248,.08); }
+.parsed-call-detail { display:grid; gap:12px; padding:0 14px 14px; }
+.parsed-grid { display:grid; grid-template-columns:minmax(120px, .35fr) minmax(0, 1fr); gap:8px 12px; margin:0; }
+.parsed-grid dt { color:var(--muted); text-transform:capitalize; }
+.parsed-grid dd { margin:0; color:#dce8f8; overflow-wrap:anywhere; }
+.raw-message { margin:0; padding:12px; border-radius:8px; border:1px solid rgba(158,176,199,.16); background:rgba(0,0,0,.22); color:#dce8f8; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.small-table table { min-width:420px; }
 .info-icon { display:inline-block; margin-left:5px; color:var(--muted); font-size:12px; cursor:help; vertical-align:middle; }
 /* Confidence badges */
 .conf-badge { display:inline-block; padding:3px 7px; border-radius:6px; font-size:11px; font-weight:700; }
@@ -110,5 +128,5 @@ td { color:#dce8f8; }
 
 .good { color:var(--good); } .bad { color:var(--bad); } .muted { color:var(--muted); }
 footer { padding:24px 7vw; display:flex; justify-content:space-between; gap:16px; border-top:1px solid var(--line); color:var(--muted); }
-@media (max-width:980px){ .summary-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } .charts { grid-template-columns:1fr; } .intro { flex-direction:column; } .metric-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
-@media (max-width:760px){ .hero, footer { flex-direction:column; align-items:flex-start; } .toolbar { flex-direction:column; } input { min-width:0; width:100%; } .summary-grid { grid-template-columns:1fr; } .metric-grid { grid-template-columns:1fr; } }
+@media (max-width:980px){ .summary-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } .charts { grid-template-columns:1fr; } .intro { flex-direction:column; } .metric-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } .drilldown-stats { grid-template-columns:repeat(2, minmax(0, 1fr)); } .drilldown-grid { grid-template-columns:1fr; } }
+@media (max-width:760px){ .hero, footer { flex-direction:column; align-items:flex-start; } .toolbar { flex-direction:column; } input { min-width:0; width:100%; } .summary-grid { grid-template-columns:1fr; } .metric-grid { grid-template-columns:1fr; } .drilldown-stats { grid-template-columns:1fr; } .parsed-call-head { flex-direction:column; } .parsed-grid { grid-template-columns:1fr; } }

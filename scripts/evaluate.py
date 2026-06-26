@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import math
 import os
 import re
 from urllib.error import URLError
@@ -16,6 +15,11 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Dict, Iterable, List, Tuple
 
+from signaltrail.instruments import (
+    detect_instrument,
+    instrument_options_details,
+    normalize_hinglish_intent,
+)
 from signaltrail.market_data import Candle, fetch_candles
 
 
@@ -31,6 +35,7 @@ WAIT_TOKENS = (
     "only above",
     "only below",
 )
+SCORABLE_INTENTS = {"buy_now", "sell_now", "conditional_buy", "conditional_sell"}
 CONDITIONAL_TOKENS = ("above", "below", "if closes above", "if closes below", "cmp")
 
 ENTRY_PAT = re.compile(r"\b(?:buy|long|sell|short)\s+[A-Z0-9.&-]+\s*@\s*(\d+(?:\.\d+)?)", re.I)
@@ -45,7 +50,7 @@ TOKEN_PAT = re.compile(r"\b[A-Z]{2,20}\b")
 # turning news headlines into spurious trade calls. Genuine inflections (buying,
 # selling, exits) are kept; the gerund 'exiting' is rejected because it is the
 # form most often used in non-actionable news ('BlackRock exiting investment').
-BUY_INTENT_PAT = re.compile(r"\b(?:buy(?:ing|s)?|long|accumulate(?:s|d)?|breakouts?)\b", re.I)
+BUY_INTENT_PAT = re.compile(r"\b(?:buy(?:ing|s)?|long|accumulate(?:s|d)?|breakouts?|add\s+(?:more|at|on|near))\b", re.I)
 SELL_INTENT_PAT = re.compile(r"\b(?:sell(?:ing|s|er|ers)?|short|exit(?:s|ed)?|avoid(?:s|ed)?)\b", re.I)
 WAIT_WORD_PAT = re.compile(r"\b(?:wait(?:ing|s)?|watch(?:es|ing)?)\b", re.I)
 
@@ -60,6 +65,10 @@ class ParsedCall:
     author_name: str
     sent_at_utc: str
     symbol: str
+    display_symbol: str
+    instrument_type: str
+    underlying: str | None
+    options_details: Dict[str, Any] | None
     direction: str
     call_type: str
     intent: str
@@ -67,8 +76,12 @@ class ParsedCall:
     entry_hint: float | None
     stop_hint: float | None
     target_hint: float | None
+    target_hints: List[float]
     trigger_above: float | None
     trigger_below: float | None
+    is_continuation: bool
+    parent_call_id: str | None
+    trailing_stop_rule: str | None
     text: str
     verifier_verdict: str
     verifier_reason: str
@@ -105,8 +118,11 @@ def classify_intent(text: str) -> Tuple[str, str, float]:
     lowered = text.lower()
     has_buy = bool(BUY_INTENT_PAT.search(text))
     has_sell = bool(SELL_INTENT_PAT.search(text))
+    hinglish_buy, hinglish_sell, hinglish_wait = normalize_hinglish_intent(text)
+    has_buy = has_buy or hinglish_buy
+    has_sell = has_sell or hinglish_sell
     # Multi-word wait/negation phrases still need substring matching.
-    has_wait = any(t in lowered for t in WAIT_TOKENS) or bool(WAIT_WORD_PAT.search(text))
+    has_wait = any(t in lowered for t in WAIT_TOKENS) or bool(WAIT_WORD_PAT.search(text)) or hinglish_wait
     conditional = any(t in lowered for t in CONDITIONAL_TOKENS)
 
     if has_wait and not has_buy and not has_sell:
@@ -193,9 +209,10 @@ def llm_extract_call_openai_compatible(
     timeout_sec: int,
 ) -> Dict[str, Any]:
     system_prompt = (
-        "Extract a structured cash-equity trading call from a Telegram message.\n"
-        "Return JSON only with keys: symbol, direction, entry, stop_loss, target, trigger_above, trigger_below, confidence, reason.\n"
+        "Extract a structured Indian trading call from a Telegram message.\n"
+        "Return JSON only with keys: symbol, direction, entry, stop_loss, target, targets, trigger_above, trigger_below, instrument_type, options_details, confidence, reason.\n"
         "direction must be bullish, bearish, or null.\n"
+        "instrument_type must be equity, options, futures, index, or unknown. For CE/PE calls, entry/target/stop are option premium levels, not the underlying index.\n"
         "Do not invent levels that are not implied by the message.\n"
         "If uncertain, return nulls with low confidence.\n"
     )
@@ -219,8 +236,14 @@ def llm_extract_call_openai_compatible(
     )
     with urlopen(req, timeout=timeout_sec) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
-    content = payload["choices"][0]["message"]["content"]
-    parsed = json.loads(content) if isinstance(content, str) else {}
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return {}
+    try:
+        parsed = json.loads(content) if isinstance(content, str) else {}
+    except (TypeError, json.JSONDecodeError):
+        return {}
     return parsed if isinstance(parsed, dict) else {}
 
 
@@ -357,6 +380,7 @@ def _simulate_target_stop_outcome(
     entry_hint: float | None,
     stop_hint: float | None,
     target_hint: float | None,
+    target_hints: List[float] | None,
     trigger_above: float | None,
     trigger_below: float | None,
     win_thresh_pct: float,
@@ -383,27 +407,44 @@ def _simulate_target_stop_outcome(
             "max_adverse_excursion": 0.0,
             "label": "flat",
         }
-    if not _level_trade_ready(direction, entry, stop_hint, target_hint):
+    targets = [float(x) for x in (target_hints or []) if x and x > 0]
+    if not targets and target_hint is not None:
+        targets = [float(target_hint)]
+    if direction == "bearish":
+        targets = sorted({x for x in targets if x < entry}, reverse=True)
+    else:
+        targets = sorted({x for x in targets if x > entry})
+    primary_target = targets[-1] if direction == "bullish" and targets else targets[-1] if targets else target_hint
+
+    if not _level_trade_ready(direction, entry, stop_hint, primary_target):
         return None
 
     stop = float(stop_hint)  # type: ignore[arg-type]
-    target = float(target_hint)  # type: ignore[arg-type]
+    target = float(primary_target)  # type: ignore[arg-type]
     risk = abs(entry - stop)
     exit_idx = end_idx
     exit_price = candles[end_idx].close
     exit_reason = "timeout"
+    targets_hit = 0
+    same_bar_ambiguous = False
+    alternate_exit_reason: str | None = None
 
     for i in range(entry_idx, end_idx + 1):
         candle = candles[i]
         if direction == "bullish":
             stop_hit = candle.low <= stop
-            target_hit = candle.high >= target
+            targets_hit_now = sum(1 for level in targets if candle.high >= level)
         else:
             stop_hit = candle.high >= stop
-            target_hit = candle.low <= target
+            targets_hit_now = sum(1 for level in targets if candle.low <= level)
+        target_hit = targets_hit_now > 0
         if stop_hit and target_hit:
+            same_bar_ambiguous = True
+            alternate_exit_reason = "target_same_bar" if same_bar_policy != "target_first" else "stop_same_bar"
             if same_bar_policy == "target_first":
-                exit_idx, exit_price, exit_reason = i, target, "target_same_bar"
+                targets_hit = max(targets_hit, targets_hit_now)
+                target_exit = targets[min(targets_hit_now, len(targets)) - 1]
+                exit_idx, exit_price, exit_reason = i, target_exit, "target_same_bar"
             else:
                 exit_idx, exit_price, exit_reason = i, stop, "stop_same_bar"
             break
@@ -411,13 +452,18 @@ def _simulate_target_stop_outcome(
             exit_idx, exit_price, exit_reason = i, stop, "stop"
             break
         if target_hit:
-            exit_idx, exit_price, exit_reason = i, target, "target"
-            break
+            targets_hit = max(targets_hit, targets_hit_now)
+            if targets_hit >= len(targets):
+                exit_idx, exit_price, exit_reason = i, targets[-1], "target"
+                break
 
     signed = ((exit_price / entry) - 1.0) if direction == "bullish" else ((entry / exit_price) - 1.0)
+    target_progress = (targets_hit / len(targets)) if targets else 0.0
     label = "flat"
-    if exit_reason.startswith("target"):
+    if exit_reason.startswith("target") and target_progress >= 1.0:
         label = "win"
+    elif target_progress > 0:
+        label = "partial_win"
     elif exit_reason.startswith("stop"):
         label = "loss"
     elif signed >= win_thresh_pct:
@@ -441,8 +487,15 @@ def _simulate_target_stop_outcome(
         "entry_price": round(entry, 4),
         "stop_price": round(stop, 4),
         "target_price": round(target, 4),
+        "target_prices": [round(x, 4) for x in targets],
+        "targets_hit_count": targets_hit,
+        "target_count": len(targets),
+        "target_progress": round(target_progress, 4),
         "exit_price": round(exit_price, 4),
         "exit_reason": exit_reason,
+        "same_bar_policy": same_bar_policy,
+        "same_bar_ambiguous": same_bar_ambiguous,
+        "same_bar_alternate_exit_reason": alternate_exit_reason,
         "exit_bars": int(exit_idx - entry_idx),
         "net_return_pct": round(signed * 100, 3),
         # Keep this field for existing ranking/report compatibility. For level-based
@@ -452,6 +505,7 @@ def _simulate_target_stop_outcome(
         "max_favorable_excursion": round(mfe * 100, 3),
         "max_adverse_excursion": round(mae * 100, 3),
         "label": label,
+        "outcome_credit": round(1.0 if label == "win" else target_progress if label == "partial_win" else 0.0, 4),
     }
 
 
@@ -468,6 +522,7 @@ def outcome_for_call(
     entry_hint: float | None = None,
     stop_hint: float | None = None,
     target_hint: float | None = None,
+    target_hints: List[float] | None = None,
     trigger_above: float | None = None,
     trigger_below: float | None = None,
     prefer_target_stop: bool = True,
@@ -494,6 +549,7 @@ def outcome_for_call(
                 entry_hint=entry_hint,
                 stop_hint=stop_hint,
                 target_hint=target_hint,
+                target_hints=target_hints,
                 trigger_above=trigger_above,
                 trigger_below=trigger_below,
                 win_thresh_pct=win_thresh_pct,
@@ -552,9 +608,41 @@ def outcome_for_call(
                 "max_favorable_excursion": round(mfe * 100, 3),
                 "max_adverse_excursion": round(mae * 100, 3),
                 "label": label,
+                "outcome_credit": 1.0 if label == "win" else 0.0,
             }
         )
     return out
+
+
+def excluded_outcome(reason: str, label: str = "flat") -> Dict[str, Any]:
+    return {
+        "evaluation_window": "n/a",
+        "evaluation_method": reason,
+        "entry_source": None,
+        "entry_price": None,
+        "exit_price": None,
+        "exit_reason": reason,
+        "net_return_pct": None,
+        "benchmark_excess_return_pct": None,
+        "r_multiple": None,
+        "max_favorable_excursion": None,
+        "max_adverse_excursion": None,
+        "label": label,
+        "outcome_credit": 0.0,
+        "exclude_from_performance": True,
+        "exclusion_reason": reason,
+    }
+
+
+def pre_market_exclusion_reason(call: ParsedCall) -> str | None:
+    if call.is_continuation and call.parent_call_id:
+        return "continuation_update"
+    if call.instrument_type == "options":
+        return "options_no_premium_data"
+    if call.instrument_type == "index" and not call.symbol.startswith("^"):
+        return "index_market_symbol_unmapped"
+    return None
+
 
 def bayes_win_rate(wins: int, losses: int, flats: int, alpha: float = 4.0, beta: float = 4.0) -> float:
     denom = wins + losses + flats + alpha + beta
@@ -574,7 +662,21 @@ def _row_method(row: Dict[str, Any]) -> str:
 
 
 def _row_is_resolved(row: Dict[str, Any]) -> bool:
-    return _row_label(row) in {"win", "loss"}
+    return _row_label(row) in {"win", "partial_win", "loss"}
+
+
+def _row_is_scored(row: Dict[str, Any]) -> bool:
+    return not bool(row.get("exclude_from_performance"))
+
+
+def _row_outcome_credit(row: Dict[str, Any]) -> float:
+    value = row.get("outcome_credit")
+    if value is not None:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return 0.0
+    return 1.0 if _row_label(row) == "win" else 0.0
 
 
 def _row_return(row: Dict[str, Any], key: str) -> float:
@@ -617,11 +719,15 @@ def _select_primary_call_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 
 def _metric_block(rows: List[Dict[str, Any]], return_key: str) -> Dict[str, Any]:
+    excluded = len([row for row in rows if not _row_is_scored(row)])
+    rows = [row for row in rows if _row_is_scored(row)]
     total = len(rows)
     wins = sum(1 for row in rows if _row_label(row) == "win")
+    partial_wins = sum(1 for row in rows if _row_label(row) == "partial_win")
+    credit_wins = sum(_row_outcome_credit(row) for row in rows if _row_label(row) in {"win", "partial_win"})
     losses = sum(1 for row in rows if _row_label(row) == "loss")
     flats = sum(1 for row in rows if _row_label(row) == "flat")
-    resolved = wins + losses
+    resolved = wins + partial_wins + losses
     resolved_rows = [row for row in rows if _row_is_resolved(row)]
     resolved_returns = [_row_return(row, return_key) for row in resolved_rows]
     win_returns = [value for value in resolved_returns if value > 0]
@@ -633,18 +739,23 @@ def _metric_block(rows: List[Dict[str, Any]], return_key: str) -> Dict[str, Any]
 
     return {
         "rows_count": total,
+        "excluded_rows_count": excluded,
         "resolved_rows_count": len(resolved_rows),
         "win_count": wins,
+        "partial_win_count": partial_wins,
+        "outcome_credit_sum": round(credit_wins, 4),
         "loss_count": losses,
         "flat_count": flats,
-        "win_rate": round(_safe_div(wins, total), 4),
-        "resolved_win_rate": round(_safe_div(wins, resolved), 4),
+        "win_rate": round(_safe_div(credit_wins, total), 4),
+        "resolved_win_rate": round(_safe_div(credit_wins, resolved), 4),
         "flat_rate": round(_safe_div(flats, total), 4),
         "expectancy": round(expectancy, 4),
         "median_return": round(median_return, 4),
+        "avg_return_pct": round(expectancy, 4),
+        "median_return_pct": round(median_return, 4),
         "payoff_ratio": round(_safe_div(avg_win, avg_loss), 4),
         "profit_factor": round(_safe_div(sum(win_returns), sum(loss_returns)), 4),
-        "bayes_win_rate": round(bayes_win_rate(wins, losses, flats), 4),
+        "bayes_win_rate": round(bayes_win_rate(credit_wins, losses, flats), 4),
     }
 
 
@@ -659,9 +770,10 @@ def compute_metrics_v2(
         if call_id:
             by_call[call_id].append(row)
 
-    primary_rows = _select_primary_call_rows(rows)
+    scored_rows = [row for row in rows if _row_is_scored(row)]
+    primary_rows = _select_primary_call_rows(scored_rows)
     resolved_primary_rows = [row for row in primary_rows if _row_is_resolved(row)]
-    resolved_rows = [row for row in rows if _row_is_resolved(row)]
+    resolved_rows = [row for row in scored_rows if _row_is_resolved(row)]
     target_stop_rows = [row for row in rows if _row_method(row) == "target_stop"]
     directional_rows = [row for row in rows if _row_method(row) == "directional_horizon"]
 
@@ -671,9 +783,11 @@ def compute_metrics_v2(
     directional_block = _metric_block(directional_rows, "benchmark_excess_return_pct")
 
     call_count = len(primary_rows)
-    row_count = len(rows)
+    row_count = len(scored_rows)
+    total_row_count = len(rows)
     resolved_call_count = len(resolved_primary_rows)
     resolved_row_count = len(resolved_rows)
+    excluded_rows = [row for row in rows if not _row_is_scored(row)]
 
     density = {
         "rows_per_call": round(_safe_div(row_count, call_count), 4),
@@ -692,10 +806,12 @@ def compute_metrics_v2(
             "parsed_calls_count": parsed_calls_count,
             "call_count": call_count,
             "row_count": row_count,
+            "total_row_count": total_row_count,
             "resolved_call_count": resolved_call_count,
             "resolved_row_count": resolved_row_count,
             "target_stop_row_count": len(target_stop_rows),
             "directional_horizon_row_count": len(directional_rows),
+            "excluded_row_count": len(excluded_rows),
         },
         "density": density,
         "call_level": {
@@ -722,6 +838,14 @@ def compute_metrics_v2(
                 "benchmark_relative_win_rate": directional_block["resolved_win_rate"],
             },
         },
+        "instrument_types": {
+            name: _metric_block([row for row in rows if str(row.get("instrument_type") or "unknown") == name], "benchmark_excess_return_pct")
+            for name in sorted({str(row.get("instrument_type") or "unknown") for row in rows})
+        },
+        "symbols": {
+            name: _metric_block([row for row in rows if str(row.get("display_symbol") or row.get("symbol") or "unknown") == name], "benchmark_excess_return_pct")
+            for name in sorted({str(row.get("display_symbol") or row.get("symbol") or "unknown") for row in rows})
+        },
         "compat": {
             "legacy_row_win_rate": row_block["win_rate"],
             "legacy_call_win_rate": call_block["win_rate"],
@@ -744,11 +868,12 @@ def recency_weight(sent_at_iso: str, now: datetime, half_life_days: float) -> fl
 
 def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: float) -> Dict[str, Any]:
     call_metrics = compute_metrics_v2(records)
-    if not records:
+    scored_records = [record for record in records if _row_is_scored(record)]
+    if not scored_records:
         return {
             "calls_count": 0,
             "valid_calls_count": 0,
-            "rows_count": 0,
+            "rows_count": len(records),
             "win_rate": 0.0,
             "avg_return": 0.0,
             "median_return": 0.0,
@@ -759,11 +884,11 @@ def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: f
             "tier": "D",
             "metrics_v2": call_metrics,
         }
-    returns = [float(r["benchmark_excess_return_pct"]) for r in records]
-    wins = sum(1 for r in records if r["label"] == "win")
-    losses = sum(1 for r in records if r["label"] == "loss")
-    flats = sum(1 for r in records if r["label"] == "flat")
-    win_rate = wins / len(records)
+    returns = [float(r.get("benchmark_excess_return_pct") or 0.0) for r in scored_records]
+    wins = sum(_row_outcome_credit(r) for r in scored_records if r["label"] in {"win", "partial_win"})
+    losses = sum(1 for r in scored_records if r["label"] == "loss")
+    flats = sum(1 for r in scored_records if r["label"] == "flat")
+    win_rate = wins / len(scored_records)
     win_rate_b = bayes_win_rate(wins, losses, flats)
     avg_ret = sum(returns) / len(returns)
     med_ret = median(returns)
@@ -773,10 +898,10 @@ def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: f
     p10 = sorted(returns)[max(0, int(len(returns) * 0.1) - 1)] if returns else 0.0
 
     cal_err = 0.0
-    for r in records:
-        realized = 1.0 if r["label"] == "win" else 0.0
+    for r in scored_records:
+        realized = _row_outcome_credit(r)
         cal_err += abs(float(r["parser_confidence"]) - realized)
-    cal_err = cal_err / len(records)
+    cal_err = cal_err / len(scored_records)
 
     wr_component = win_rate_b * 100.0
     ret_component = max(-5.0, min(5.0, med_ret)) * 4.0
@@ -786,9 +911,9 @@ def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: f
 
     rec_w_sum = 0.0
     rec_n = 0.0
-    for r in records:
+    for r in scored_records:
         w = recency_weight(r["sent_at_utc"], now, half_life_days)
-        rec_w_sum += w * float(r["benchmark_excess_return_pct"])
+        rec_w_sum += w * float(r.get("benchmark_excess_return_pct") or 0.0)
         rec_n += w
     recency_edge = (rec_w_sum / rec_n) if rec_n else 0.0
 
@@ -897,6 +1022,25 @@ async def fetch_messages(
     return messages
 
 
+def _message_sort_key(item: tuple[int, Dict[str, Any]]) -> tuple[str, int]:
+    idx, message = item
+    return str(message.get("sent_at_utc") or ""), idx
+
+
+def _message_source_key(message: Dict[str, Any]) -> str:
+    if message.get("author_id") is not None:
+        return f"author:{message.get('author_id')}"
+    if message.get("channel_id") is not None:
+        return f"channel:{message.get('channel_id')}"
+    return f"channel:{message.get('channel_handle') or 'unknown'}"
+
+
+def _continuation_base_key(source_key: str, instrument_type: str, symbol: str | None) -> str | None:
+    if not symbol:
+        return None
+    return f"{source_key}:{instrument_type}:{symbol}"
+
+
 def parse_calls(
     messages: Iterable[Dict[str, Any]],
     symbol_map: Dict[str, str],
@@ -912,23 +1056,34 @@ def parse_calls(
     llm_extract_timeout_sec: int = 30,
 ) -> List[ParsedCall]:
     out: List[ParsedCall] = []
-    for m in messages:
+    active_parent_by_key: Dict[str, tuple[str, str]] = {}
+    for _, m in sorted(enumerate(messages), key=_message_sort_key):
         text = str(m.get("text_raw") or "")
         if not text:
             continue
         intent, direction, conf = classify_intent(text)
-        if intent in {"noise", "ambiguous", "wait"}:
+        source_key = _message_source_key(m)
+        syms = symbol_candidates(text, symbol_map)
+        provisional_direction = direction if direction in {"bullish", "bearish"} else "bullish"
+        instrument = detect_instrument(text, syms, symbol_map, provisional_direction)
+        if instrument.symbol and not syms and instrument.instrument_type in {"index", "options"}:
+            syms = [instrument.symbol]
+        is_update_only = intent in {"noise", "ambiguous", "wait"} and instrument.is_continuation
+        if intent in {"noise", "ambiguous", "wait"} and not is_update_only:
             continue
         entry_hint = parse_num(ENTRY_PAT, text)
         stop_hint = parse_num(STOP_PAT, text)
         target_hint = parse_num(TGT_PAT, text)
         trigger_above = parse_num(ABOVE_PAT, text)
         trigger_below = parse_num(BELOW_PAT, text)
-        verifier_verdict, verifier_reason = verify_message_intent(text, intent, direction)
+        verifier_verdict, verifier_reason = ("accept", "continuation_update") if is_update_only else verify_message_intent(text, intent, direction)
         if llm_verify_enabled:
             should_call_llm = (
+                not is_update_only
+                and (
                 llm_verify_mode == "always"
                 or (llm_verify_mode == "review_only" and verifier_verdict == "review")
+                )
             )
             if should_call_llm:
                 llm_v, llm_r = llm_verify_message_ollama(
@@ -947,7 +1102,7 @@ def parse_calls(
                     verifier_reason = f"llm:{llm_r}"
         if verifier_verdict == "reject":
             continue
-        syms = symbol_candidates(text, symbol_map)
+        extracted_target_hints: List[float] = []
         if llm_extract_enabled and llm_extract_api_key and _should_attempt_llm_extract(
             verifier_verdict,
             conf,
@@ -965,7 +1120,7 @@ def parse_calls(
                     api_key=llm_extract_api_key,
                     timeout_sec=llm_extract_timeout_sec,
                 )
-            except (URLError, TimeoutError, OSError, json.JSONDecodeError, KeyError):
+            except (URLError, TimeoutError, OSError, json.JSONDecodeError, KeyError, IndexError, TypeError):
                 extracted = {}
 
             extracted_symbol = _normalize_symbol(extracted.get("symbol"), symbol_map)
@@ -992,16 +1147,48 @@ def parse_calls(
                     stop_hint = valid_stop
                 if target_hint is None and valid_target is not None:
                     target_hint = valid_target
+                extracted_targets = extracted.get("targets")
+                if isinstance(extracted_targets, list):
+                    for value in extracted_targets:
+                        parsed_target = _safe_float(value)
+                        if parsed_target and parsed_target > 0 and parsed_target not in extracted_target_hints:
+                            extracted_target_hints.append(parsed_target)
                 if entry_hint is None and valid_entry is not None:
                     entry_hint = valid_entry
                 if extracted and (valid_stop is not None or valid_target is not None or extracted_symbol):
                     verifier_reason = f"{verifier_reason}|llm_extract"
+        instrument = detect_instrument(text, syms, symbol_map, provisional_direction)
+        for parsed_target in extracted_target_hints:
+            if parsed_target not in instrument.target_hints:
+                instrument.target_hints.append(parsed_target)
+        if entry_hint is None and instrument.entry_hint is not None:
+            entry_hint = instrument.entry_hint
+        if target_hint is None and instrument.target_hints:
+            target_hint = instrument.target_hints[0]
         if not syms:
             continue
-        if direction not in {"bullish", "bearish"}:
+        if direction not in {"bullish", "bearish"} and not is_update_only:
             continue
         for idx, sym in enumerate(syms[:3]):
+            per_symbol_instrument = instrument
+            if instrument.instrument_type not in {"options", "index"}:
+                per_symbol_instrument = detect_instrument(text, [sym], symbol_map, provisional_direction)
+                for parsed_target in extracted_target_hints:
+                    if parsed_target not in per_symbol_instrument.target_hints:
+                        per_symbol_instrument.target_hints.append(parsed_target)
+            parent_call_id = None
+            effective_direction = direction
+            base_symbol = per_symbol_instrument.underlying or per_symbol_instrument.display_symbol or per_symbol_instrument.symbol
+            parent_base_key = _continuation_base_key(source_key, per_symbol_instrument.instrument_type, base_symbol)
+            if per_symbol_instrument.is_continuation and per_symbol_instrument.parent_key:
+                parent_record = active_parent_by_key.get(parent_base_key or "")
+                if parent_record:
+                    parent_call_id, effective_direction = parent_record
+            if is_update_only and not parent_call_id:
+                continue
             call_id = f"{m.get('channel_id')}:{m.get('message_id')}:{sym}:{idx}"
+            if parent_call_id is None and parent_base_key and effective_direction in {"bullish", "bearish"}:
+                active_parent_by_key[parent_base_key] = (call_id, effective_direction)
             out.append(
                 ParsedCall(
                     call_id=call_id,
@@ -1011,16 +1198,24 @@ def parse_calls(
                     author_id=(int(m["author_id"]) if m.get("author_id") is not None else None),
                     author_name=str(m.get("author_name") or ""),
                     sent_at_utc=str(m.get("sent_at_utc") or ""),
-                    symbol=sym,
-                    direction=direction,
-                    call_type=call_type(text),
-                    intent=intent,
+                    symbol=per_symbol_instrument.symbol or sym,
+                    display_symbol=per_symbol_instrument.display_symbol or sym,
+                    instrument_type=per_symbol_instrument.instrument_type,
+                    underlying=per_symbol_instrument.underlying,
+                    options_details=instrument_options_details(per_symbol_instrument),
+                    direction=effective_direction,
+                    call_type="continuation" if parent_call_id else call_type(text),
+                    intent="continuation_update" if is_update_only else intent,
                     parser_confidence=round(conf, 3),
                     entry_hint=entry_hint,
                     stop_hint=stop_hint,
                     target_hint=target_hint,
+                    target_hints=per_symbol_instrument.target_hints or ([target_hint] if target_hint else []),
                     trigger_above=trigger_above,
                     trigger_below=trigger_below,
+                    is_continuation=bool(parent_call_id),
+                    parent_call_id=parent_call_id,
+                    trailing_stop_rule=per_symbol_instrument.trailing_stop_rule,
                     text=text[:400],
                     verifier_verdict=verifier_verdict,
                     verifier_reason=verifier_reason,
@@ -1062,18 +1257,20 @@ def build_time_series(
     def summarize(items: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         out = []
         for k, rows in items.items():
-            primary_rows = _select_primary_call_rows(rows)
-            wins = sum(1 for r in rows if r["label"] == "win")
-            losses = sum(1 for r in rows if r["label"] == "loss")
-            flats = sum(1 for r in rows if r["label"] == "flat")
-            resolved_rows = [r for r in rows if _row_is_resolved(r)]
-            rets = [float(r["benchmark_excess_return_pct"]) for r in rows]
+            scored_rows = [row for row in rows if _row_is_scored(row)]
+            primary_rows = _select_primary_call_rows(scored_rows)
+            wins = sum(_row_outcome_credit(r) for r in scored_rows if r["label"] in {"win", "partial_win"})
+            losses = sum(1 for r in scored_rows if r["label"] == "loss")
+            flats = sum(1 for r in scored_rows if r["label"] == "flat")
+            resolved_rows = [r for r in scored_rows if _row_is_resolved(r)]
+            rets = [float(r.get("benchmark_excess_return_pct") or 0.0) for r in scored_rows]
             avg = sum(rets) / len(rets) if rets else 0.0
             out.append(
                 {
                     "key": k,
                     "calls_count": len(primary_rows),
                     "rows_count": len(rows),
+                    "excluded_rows_count": len(rows) - len(scored_rows),
                     "valid_calls_count": sum(1 for r in primary_rows if _row_is_resolved(r)),
                     "resolved_rows_count": len(resolved_rows),
                     "wins": wins,
@@ -1172,6 +1369,21 @@ def _channel_label(handle: str) -> str:
     return _PUBLIC_CHANNEL_LABELS.get(handle, _codename(handle))
 
 
+def _public_row_key(seed: str) -> str:
+    import hashlib
+
+    return f"row-{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _public_message_excerpt(text: Any, limit: int = 220) -> str:
+    cleaned = normalize_text(str(text or ""))
+    cleaned = re.sub(r"https?://\S+|t\.me/\S+", "[link]", cleaned, flags=re.I)
+    cleaned = re.sub(r"@\w+", "[handle]", cleaned)
+    cleaned = re.sub(r"\b[\w.+-]+@[\w.-]+\.\w+\b", "[email]", cleaned)
+    cleaned = re.sub(r"\b(?:\+?91[-\s]?)?[6-9]\d{9}\b", "[phone]", cleaned)
+    return cleaned[:limit]
+
+
 def _write_leaderboard(
     payload: Dict[str, Any],
     outcomes: List[Dict[str, Any]],
@@ -1184,7 +1396,13 @@ def _write_leaderboard(
     rankings = payload.get("rankings", {})
     author_rows = rankings.get("author_rankings", [])
     ts_counts: Dict[str, Dict[str, int]] = _dd(lambda: {"target_hits": 0, "stop_hits": 0, "target_stop_rows": 0, "resolved_target_stop_rows": 0})
+    author_outcomes: Dict[str, List[Dict[str, Any]]] = _dd(list)
+    same_bar_ambiguous_count = 0
     for item in outcomes:
+        author_key = str(item.get("author_id")) if item.get("author_id") is not None else f"name:{item.get('author_name') or 'unknown'}"
+        author_outcomes[author_key].append(item)
+        if item.get("same_bar_ambiguous"):
+            same_bar_ambiguous_count += 1
         if str(item.get("evaluation_method") or "") != "target_stop":
             continue
         keys = {str(item.get("author_id") or "").strip(), str(item.get("author_name") or "").strip()}
@@ -1200,6 +1418,7 @@ def _write_leaderboard(
                 ts_counts[key]["resolved_target_stop_rows"] += 1
 
     rows = []
+    drilldowns: Dict[str, Dict[str, Any]] = {}
     rank = 1
     for row in author_rows:
         metrics = row.get("metrics_v2") or {}
@@ -1212,6 +1431,7 @@ def _write_leaderboard(
         rows_count = int(row.get("rows_count") or row_m.get("rows_count") or 0)
         resolved_calls = int((call_m.get("resolved_calls_count") or call_m.get("resolved_rows_count") or 0))
         raw_key = str(row.get("key") or "")
+        row_key = _public_row_key(raw_key)
         handle = id_to_handle.get(raw_key, raw_key)
         ts = ts_counts.get(raw_key) or ts_counts.get(handle) or {"target_hits": 0, "stop_hits": 0, "target_stop_rows": 0, "resolved_target_stop_rows": 0}
         resolved_ts = int(ts["resolved_target_stop_rows"])
@@ -1221,7 +1441,26 @@ def _write_leaderboard(
         public_rank = None if tier == "IS" else rank
         if public_rank is not None:
             rank += 1
-        rows.append({
+        instrument_types = metrics.get("instrument_types") or {}
+        symbol_metrics = metrics.get("symbols") or {}
+        per_symbol = [
+            {
+                "symbol": symbol,
+                "rows_count": block.get("rows_count"),
+                "resolved_win_rate": block.get("resolved_win_rate"),
+                "expectancy": block.get("expectancy"),
+                "avg_return_pct": block.get("avg_return_pct", block.get("expectancy")),
+                "profit_factor": block.get("profit_factor"),
+                "excluded_rows_count": block.get("excluded_rows_count"),
+            }
+            for symbol, block in sorted(
+                symbol_metrics.items(),
+                key=lambda kv: int((kv[1] or {}).get("rows_count") or 0),
+                reverse=True,
+            )[:12]
+        ]
+        row_payload = {
+            "row_key": row_key,
             "rank": public_rank,
             "display_name": _codename(raw_key),
             "channel": _channel_label(handle),
@@ -1246,9 +1485,85 @@ def _write_leaderboard(
             "bayes_win_rate": call_m.get("bayes_win_rate"),
             "avg_r": call_m.get("expectancy"),
             "median_r": call_m.get("median_return"),
+            "avg_return_pct": call_m.get("avg_return_pct", call_m.get("expectancy")),
+            "median_return_pct": call_m.get("median_return_pct", call_m.get("median_return")),
             "profit_factor": call_m.get("profit_factor"),
             "confidence": "insufficient_sample" if tier == "IS" else "eligible",
-        })
+            "instrument_breakdown": instrument_types,
+            "per_symbol_breakdown": per_symbol,
+            "excluded_rows_count": (metrics.get("counts") or {}).get("excluded_row_count"),
+            "options_no_premium_count": sum(
+                1 for item in author_outcomes.get(raw_key, []) if item.get("evaluation_method") == "options_no_premium_data"
+            ),
+            "continuation_update_count": sum(
+                1 for item in author_outcomes.get(raw_key, []) if item.get("evaluation_method") == "continuation_update"
+            ),
+        }
+        rows.append(row_payload)
+        drilldowns[row_key] = {
+            "row_key": row_key,
+            "display_name": row_payload["display_name"],
+            "channel": row_payload["channel"],
+            "tier": tier,
+            "confidence": row_payload["confidence"],
+            "calls_evaluated": calls,
+            "resolved_win_rate": row_payload["resolved_win_rate"],
+            "target_stop_win_rate": row_payload["target_stop_win_rate"],
+            "instrument_breakdown": instrument_types,
+            "per_symbol_breakdown": per_symbol,
+            "parsed_calls": [],
+        }
+
+        seen_calls: set[str] = set()
+        for item in sorted(author_outcomes.get(raw_key, []), key=lambda r: str(r.get("sent_at_utc") or ""), reverse=True):
+            call_id = str(item.get("call_id") or "")
+            if not call_id or call_id in seen_calls:
+                continue
+            seen_calls.add(call_id)
+            drilldowns[row_key]["parsed_calls"].append(
+                {
+                    "call_id": call_id,
+                    "message_id": item.get("message_id"),
+                    "message_ts_utc": item.get("sent_at_utc"),
+                    "symbol": item.get("display_symbol") or item.get("symbol"),
+                    "instrument_type": item.get("instrument_type"),
+                    "underlying": item.get("underlying"),
+                    "options_details": item.get("options_details"),
+                    "direction": item.get("direction"),
+                    "outcome": item.get("label"),
+                    "outcome_credit": item.get("outcome_credit"),
+                    "evaluation_method": item.get("evaluation_method"),
+                    "evaluation_window": item.get("evaluation_window"),
+                    "net_return_pct": item.get("net_return_pct"),
+                    "benchmark_excess_return_pct": item.get("benchmark_excess_return_pct"),
+                    "exclude_from_performance": item.get("exclude_from_performance"),
+                    "exclusion_reason": item.get("exclusion_reason"),
+                    "message_excerpt": _public_message_excerpt(item.get("text")),
+                    "parsed_fields": {
+                        "symbol": item.get("symbol"),
+                        "display_symbol": item.get("display_symbol"),
+                        "instrument_type": item.get("instrument_type"),
+                        "direction": item.get("direction"),
+                        "entry_hint": item.get("entry_hint"),
+                        "stop_hint": item.get("stop_hint"),
+                        "target_hint": item.get("target_hint"),
+                        "target_hints": item.get("target_hints"),
+                        "target_prices": item.get("target_prices"),
+                        "targets_hit_count": item.get("targets_hit_count"),
+                        "target_count": item.get("target_count"),
+                        "trigger_above": item.get("trigger_above"),
+                        "trigger_below": item.get("trigger_below"),
+                        "is_continuation": item.get("is_continuation"),
+                        "parent_call_id": item.get("parent_call_id"),
+                        "trailing_stop_rule": item.get("trailing_stop_rule"),
+                        "same_bar_policy": item.get("same_bar_policy"),
+                        "same_bar_ambiguous": item.get("same_bar_ambiguous"),
+                        "same_bar_alternate_exit_reason": item.get("same_bar_alternate_exit_reason"),
+                    },
+                }
+            )
+            if len(drilldowns[row_key]["parsed_calls"]) >= 25:
+                break
 
     samples: List[Dict[str, Any]] = []
     seen: set = set()
@@ -1263,15 +1578,23 @@ def _write_leaderboard(
         samples.append({
             "author_alias": _codename(author_seed),
             "channel_alias": _channel_label(handle),
-            "symbol": item.get("symbol"),
+            "symbol": item.get("display_symbol") or item.get("symbol"),
+            "instrument_type": item.get("instrument_type"),
             "direction": item.get("direction"),
             "evaluation_window": item.get("evaluation_window"),
             "evaluation_method": item.get("evaluation_method"),
             "outcome": item.get("label"),
+            "outcome_credit": item.get("outcome_credit"),
             "reached_target": reason.startswith("target"),
             "reached_stop": reason.startswith("stop"),
             "net_return_pct": item.get("net_return_pct"),
             "benchmark_excess_return_pct": item.get("benchmark_excess_return_pct"),
+            "message_excerpt": _public_message_excerpt(item.get("text")),
+            "target_prices": item.get("target_prices"),
+            "targets_hit_count": item.get("targets_hit_count"),
+            "target_count": item.get("target_count"),
+            "exclude_from_performance": item.get("exclude_from_performance"),
+            "exclusion_reason": item.get("exclusion_reason"),
         })
         if len(samples) >= 8:
             break
@@ -1289,9 +1612,15 @@ def _write_leaderboard(
             "market_data_range": payload.get("market_data_range"),
             "lookback_days": payload.get("lookback_days"),
             "horizons_days": payload.get("horizons_days"),
+            "prefer_target_stop": payload.get("prefer_target_stop"),
+            "same_bar_policy": payload.get("same_bar_policy"),
+            "same_bar_ambiguous_count": same_bar_ambiguous_count,
+            "is_threshold": is_threshold,
+            "sample_size_policy": f"Rows with fewer than {is_threshold} scored calls are labelled IS.",
         },
         "metrics_v2": payload.get("metrics_v2"),
         "breakdown_samples": samples,
+        "drilldowns": drilldowns,
         "rows": rows,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1314,7 +1643,7 @@ def main() -> int:
     ap.add_argument("--half-life-days", type=float, default=30.0)
     ap.add_argument("--out-dir", default="data/output")
     ap.add_argument("--runtime-json", default="data/output/scores.json")
-    ap.add_argument("--leaderboard-out", default="leaderboard-public.json", help="Write masked public leaderboard JSON directly to this path.")
+    ap.add_argument("--leaderboard-out", default="public/leaderboard-public.json", help="Write masked public leaderboard JSON directly to this path.")
     ap.add_argument("--is-threshold", type=int, default=8, help="Minimum calls required for a channel to be marked eligible (default: 8).")
     ap.add_argument("--from-date", default="", help="Optional YYYY-MM-DD filter on sent_at (inclusive)")
     ap.add_argument("--to-date", default="", help="Optional YYYY-MM-DD filter on sent_at (inclusive)")
@@ -1393,37 +1722,42 @@ def main() -> int:
     candle_cache: Dict[str, List[Candle]] = {}
     outcomes: List[Dict[str, Any]] = []
     for call in parsed:
-        if call.intent not in {"buy_now", "sell_now", "conditional_buy", "conditional_sell"}:
-            continue
-        if call.symbol not in candle_cache:
-            try:
-                candle_cache[call.symbol] = fetch_candles(call.symbol, args.market_data_range, "1d")
-            except Exception:
-                continue
         try:
             sent = datetime.fromisoformat(call.sent_at_utc)
             if sent.tzinfo is None:
                 sent = sent.replace(tzinfo=UTC)
         except ValueError:
             continue
-        call_outcomes = outcome_for_call(
-            symbol=call.symbol,
-            direction=call.direction,
-            sent_at=sent,
-            horizons=horizons,
-            symbol_candles=candle_cache[call.symbol],
-            benchmark_candles=bench_candles,
-            win_thresh_pct=args.win_threshold_pct / 100.0,
-            loss_thresh_pct=args.loss_threshold_pct / 100.0,
-            intent=call.intent,
-            entry_hint=call.entry_hint,
-            stop_hint=call.stop_hint,
-            target_hint=call.target_hint,
-            trigger_above=call.trigger_above,
-            trigger_below=call.trigger_below,
-            prefer_target_stop=bool(args.prefer_target_stop),
-            same_bar_policy=str(args.same_bar_policy),
-        )
+        exclusion_reason = pre_market_exclusion_reason(call)
+        if exclusion_reason:
+            call_outcomes = [excluded_outcome(exclusion_reason)]
+        else:
+            if call.intent not in SCORABLE_INTENTS:
+                continue
+            if call.symbol not in candle_cache:
+                try:
+                    candle_cache[call.symbol] = fetch_candles(call.symbol, args.market_data_range, "1d")
+                except Exception:
+                    continue
+            call_outcomes = outcome_for_call(
+                symbol=call.symbol,
+                direction=call.direction,
+                sent_at=sent,
+                horizons=horizons,
+                symbol_candles=candle_cache[call.symbol],
+                benchmark_candles=bench_candles,
+                win_thresh_pct=args.win_threshold_pct / 100.0,
+                loss_thresh_pct=args.loss_threshold_pct / 100.0,
+                intent=call.intent,
+                entry_hint=call.entry_hint,
+                stop_hint=call.stop_hint,
+                target_hint=call.target_hint,
+                target_hints=call.target_hints,
+                trigger_above=call.trigger_above,
+                trigger_below=call.trigger_below,
+                prefer_target_stop=bool(args.prefer_target_stop),
+                same_bar_policy=str(args.same_bar_policy),
+            )
         for row in call_outcomes:
             outcomes.append(
                 {
@@ -1435,6 +1769,10 @@ def main() -> int:
                     "author_name": call.author_name,
                     "sent_at_utc": call.sent_at_utc,
                     "symbol": call.symbol,
+                    "display_symbol": call.display_symbol,
+                    "instrument_type": call.instrument_type,
+                    "underlying": call.underlying,
+                    "options_details": call.options_details,
                     "direction": call.direction,
                     "intent": call.intent,
                     "call_type": call.call_type,
@@ -1442,8 +1780,12 @@ def main() -> int:
                     "entry_hint": call.entry_hint,
                     "stop_hint": call.stop_hint,
                     "target_hint": call.target_hint,
+                    "target_hints": call.target_hints,
                     "trigger_above": call.trigger_above,
                     "trigger_below": call.trigger_below,
+                    "is_continuation": call.is_continuation,
+                    "parent_call_id": call.parent_call_id,
+                    "trailing_stop_rule": call.trailing_stop_rule,
                     "text": call.text,
                     "verifier_verdict": call.verifier_verdict,
                     "verifier_reason": call.verifier_reason,
