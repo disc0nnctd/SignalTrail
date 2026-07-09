@@ -45,6 +45,7 @@ public/                         ← static dashboard (HTML/JS/CSS)
 
 signaltrail/ contains shared library code (market data fetching, scoring logic).
 See [DEPLOY.md](DEPLOY.md) for the full deployment walkthrough.
+See [docs/viability-plan.md](docs/viability-plan.md) for the current hardening plan.
 
 ---
 

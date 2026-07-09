@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 from urllib.error import URLError
@@ -21,6 +22,7 @@ from signaltrail.instruments import (
     normalize_hinglish_intent,
 )
 from signaltrail.market_data import Candle, fetch_candles
+from signaltrail.message_filters import is_non_actionable_news_context
 
 
 BUY_TOKENS = ("buy", "long", "accumulate", "breakout")
@@ -50,8 +52,10 @@ TOKEN_PAT = re.compile(r"\b[A-Z]{2,20}\b")
 # turning news headlines into spurious trade calls. Genuine inflections (buying,
 # selling, exits) are kept; the gerund 'exiting' is rejected because it is the
 # form most often used in non-actionable news ('BlackRock exiting investment').
-BUY_INTENT_PAT = re.compile(r"\b(?:buy(?:ing|s)?|long|accumulate(?:s|d)?|breakouts?|add\s+(?:more|at|on|near))\b", re.I)
-SELL_INTENT_PAT = re.compile(r"\b(?:sell(?:ing|s|er|ers)?|short|exit(?:s|ed)?|avoid(?:s|ed)?)\b", re.I)
+BUY_INTENT_PAT = re.compile(r"\b(?:buy(?:ing|s)?|accumulate(?:s|d)?|breakouts?|add\s+(?:more|at|on|near))\b", re.I)
+LONG_INTENT_PAT = re.compile(r"\b(?:go\s+long|long\s+(?:[A-Z0-9.&-]{2,20}|above|below|at|near|@))\b", re.I)
+SELL_INTENT_PAT = re.compile(r"\b(?:sell(?:ing|s|er|ers)?|exit(?:s|ed)?|avoid(?:s|ed)?)\b", re.I)
+SHORT_INTENT_PAT = re.compile(r"\b(?:go\s+short|short\s+(?:[A-Z0-9.&-]{2,20}|above|below|at|near|@))\b", re.I)
 WAIT_WORD_PAT = re.compile(r"\b(?:wait(?:ing|s)?|watch(?:es|ing)?)\b", re.I)
 
 
@@ -116,8 +120,8 @@ def parse_num(pat: re.Pattern[str], text: str) -> float | None:
 
 def classify_intent(text: str) -> Tuple[str, str, float]:
     lowered = text.lower()
-    has_buy = bool(BUY_INTENT_PAT.search(text))
-    has_sell = bool(SELL_INTENT_PAT.search(text))
+    has_buy = bool(BUY_INTENT_PAT.search(text) or LONG_INTENT_PAT.search(text))
+    has_sell = bool(SELL_INTENT_PAT.search(text) or SHORT_INTENT_PAT.search(text))
     hinglish_buy, hinglish_sell, hinglish_wait = normalize_hinglish_intent(text)
     has_buy = has_buy or hinglish_buy
     has_sell = has_sell or hinglish_sell
@@ -653,6 +657,57 @@ def _safe_div(num: float, den: float) -> float:
     return num / den if den else 0.0
 
 
+def _sample_stddev(values: List[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(max(0.0, variance))
+
+
+def _mean_t_stat(values: List[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    stddev = _sample_stddev(values)
+    if stddev <= 0:
+        return 0.0
+    mean = sum(values) / len(values)
+    return mean / (stddev / math.sqrt(len(values)))
+
+
+def _wilson_interval(success_credit: float, total: int, z: float = 1.96) -> tuple[float, float]:
+    if total <= 0:
+        return 0.0, 0.0
+    p_hat = max(0.0, min(1.0, success_credit / total))
+    z2 = z * z
+    denom = 1.0 + z2 / total
+    center = (p_hat + z2 / (2.0 * total)) / denom
+    margin = (z / denom) * math.sqrt((p_hat * (1.0 - p_hat)) / total + z2 / (4.0 * total * total))
+    return max(0.0, center - margin), min(1.0, center + margin)
+
+
+def _sample_reliability(call_count: int, resolved_count: int, t_stat: float) -> float:
+    count_component = min(1.0, math.sqrt(max(0, call_count) / 30.0))
+    resolution_component = min(1.0, _safe_div(resolved_count, max(1, call_count)))
+    significance_component = min(1.0, abs(t_stat) / 2.0)
+    reliability = 0.5 * count_component + 0.3 * resolution_component + 0.2 * significance_component
+    return max(0.0, min(1.0, reliability))
+
+
+def _evidence_grade(call_count: int, resolved_count: int, t_stat: float, win_ci_low: float, win_ci_high: float) -> str:
+    if call_count <= 0:
+        return "no_data"
+    if call_count < 8 or resolved_count < 5:
+        return "insufficient_sample"
+    if t_stat <= -1.0 or win_ci_high < 0.5:
+        return "negative_edge"
+    if call_count >= 30 and resolved_count >= 20 and t_stat >= 2.0 and win_ci_low > 0.5:
+        return "strong_edge"
+    if call_count >= 15 and resolved_count >= 10 and t_stat >= 1.0 and win_ci_low >= 0.45:
+        return "suggestive_edge"
+    return "exploratory"
+
+
 def _row_label(row: Dict[str, Any]) -> str:
     return str(row.get("label") or "flat")
 
@@ -736,6 +791,14 @@ def _metric_block(rows: List[Dict[str, Any]], return_key: str) -> Dict[str, Any]
     avg_loss = (sum(loss_returns) / len(loss_returns)) if loss_returns else 0.0
     expectancy = (sum(resolved_returns) / len(resolved_returns)) if resolved_returns else 0.0
     median_return = median(resolved_returns) if resolved_returns else 0.0
+    return_stddev = _sample_stddev(resolved_returns)
+    return_sem = return_stddev / math.sqrt(len(resolved_returns)) if resolved_returns and return_stddev else 0.0
+    t_stat = _mean_t_stat(resolved_returns)
+    risk_adjusted_return = _safe_div(expectancy, return_stddev) if return_stddev else 0.0
+    win_ci_low, win_ci_high = _wilson_interval(credit_wins, total)
+    resolved_win_ci_low, resolved_win_ci_high = _wilson_interval(credit_wins, resolved)
+    reliability = _sample_reliability(total, resolved, t_stat)
+    evidence_grade = _evidence_grade(total, resolved, t_stat, win_ci_low, win_ci_high)
 
     return {
         "rows_count": total,
@@ -753,6 +816,16 @@ def _metric_block(rows: List[Dict[str, Any]], return_key: str) -> Dict[str, Any]
         "median_return": round(median_return, 4),
         "avg_return_pct": round(expectancy, 4),
         "median_return_pct": round(median_return, 4),
+        "return_stddev": round(return_stddev, 4),
+        "return_sem": round(return_sem, 4),
+        "excess_return_t_stat": round(t_stat, 4),
+        "risk_adjusted_return": round(risk_adjusted_return, 4),
+        "win_rate_ci_low": round(win_ci_low, 4),
+        "win_rate_ci_high": round(win_ci_high, 4),
+        "resolved_win_rate_ci_low": round(resolved_win_ci_low, 4),
+        "resolved_win_rate_ci_high": round(resolved_win_ci_high, 4),
+        "sample_reliability": round(reliability, 4),
+        "evidence_grade": evidence_grade,
         "payoff_ratio": round(_safe_div(avg_win, avg_loss), 4),
         "profit_factor": round(_safe_div(sum(win_returns), sum(loss_returns)), 4),
         "bayes_win_rate": round(bayes_win_rate(credit_wins, losses, flats), 4),
@@ -880,6 +953,12 @@ def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: f
             "payoff_ratio": 0.0,
             "downside_tail": 0.0,
             "calibration_error": 1.0,
+            "return_stddev": 0.0,
+            "risk_adjusted_return": 0.0,
+            "excess_return_t_stat": 0.0,
+            "sample_reliability": 0.0,
+            "evidence_grade": "no_data",
+            "raw_score": 0.0,
             "recency_weighted_score": 0.0,
             "tier": "D",
             "metrics_v2": call_metrics,
@@ -918,7 +997,11 @@ def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: f
     recency_edge = (rec_w_sum / rec_n) if rec_n else 0.0
 
     raw = wr_component + ret_component + payoff_component - tail_penalty - conf_penalty + (recency_edge * 1.2)
-    score = max(0.0, min(100.0, raw))
+    call_m = call_metrics["call_level"]
+    reliability = float(call_m.get("sample_reliability") or 0.0)
+    return_stddev = float(call_m.get("return_stddev") or 0.0)
+    volatility_penalty = min(15.0, return_stddev * 0.25)
+    score = max(0.0, min(100.0, raw * (0.5 + 0.5 * reliability) - volatility_penalty))
     if score >= 80:
         tier = "A"
     elif score >= 65:
@@ -937,6 +1020,16 @@ def score_bucket(records: List[Dict[str, Any]], now: datetime, half_life_days: f
         "payoff_ratio": round(payoff, 4),
         "downside_tail": round(p10, 4),
         "calibration_error": round(cal_err, 4),
+        "return_stddev": round(return_stddev, 4),
+        "risk_adjusted_return": call_m.get("risk_adjusted_return", 0.0),
+        "excess_return_t_stat": call_m.get("excess_return_t_stat", 0.0),
+        "win_rate_ci_low": call_m.get("win_rate_ci_low", 0.0),
+        "win_rate_ci_high": call_m.get("win_rate_ci_high", 0.0),
+        "resolved_win_rate_ci_low": call_m.get("resolved_win_rate_ci_low", 0.0),
+        "resolved_win_rate_ci_high": call_m.get("resolved_win_rate_ci_high", 0.0),
+        "sample_reliability": round(reliability, 4),
+        "evidence_grade": call_m.get("evidence_grade", "no_data"),
+        "raw_score": round(max(0.0, min(100.0, raw)), 3),
         "recency_weighted_score": round(score, 3),
         "tier": tier,
         "metrics_v2": call_metrics,
@@ -1068,6 +1161,8 @@ def parse_calls(
         instrument = detect_instrument(text, syms, symbol_map, provisional_direction)
         if instrument.symbol and not syms and instrument.instrument_type in {"index", "options"}:
             syms = [instrument.symbol]
+        if is_non_actionable_news_context(text, syms):
+            continue
         is_update_only = intent in {"noise", "ambiguous", "wait"} and instrument.is_continuation
         if intent in {"noise", "ambiguous", "wait"} and not is_update_only:
             continue
@@ -1450,6 +1545,11 @@ def _write_leaderboard(
                 "resolved_win_rate": block.get("resolved_win_rate"),
                 "expectancy": block.get("expectancy"),
                 "avg_return_pct": block.get("avg_return_pct", block.get("expectancy")),
+                "return_stddev": block.get("return_stddev"),
+                "risk_adjusted_return": block.get("risk_adjusted_return"),
+                "excess_return_t_stat": block.get("excess_return_t_stat"),
+                "sample_reliability": block.get("sample_reliability"),
+                "evidence_grade": block.get("evidence_grade"),
                 "profit_factor": block.get("profit_factor"),
                 "excluded_rows_count": block.get("excluded_rows_count"),
             }
@@ -1487,8 +1587,18 @@ def _write_leaderboard(
             "median_r": call_m.get("median_return"),
             "avg_return_pct": call_m.get("avg_return_pct", call_m.get("expectancy")),
             "median_return_pct": call_m.get("median_return_pct", call_m.get("median_return")),
+            "return_stddev": call_m.get("return_stddev"),
+            "risk_adjusted_return": call_m.get("risk_adjusted_return"),
+            "excess_return_t_stat": call_m.get("excess_return_t_stat"),
+            "win_rate_ci_low": call_m.get("win_rate_ci_low"),
+            "win_rate_ci_high": call_m.get("win_rate_ci_high"),
+            "resolved_win_rate_ci_low": call_m.get("resolved_win_rate_ci_low"),
+            "resolved_win_rate_ci_high": call_m.get("resolved_win_rate_ci_high"),
+            "sample_reliability": call_m.get("sample_reliability"),
+            "evidence_grade": row.get("evidence_grade") or call_m.get("evidence_grade"),
+            "raw_score": row.get("raw_score"),
             "profit_factor": call_m.get("profit_factor"),
-            "confidence": "insufficient_sample" if tier == "IS" else "eligible",
+            "confidence": "insufficient_sample" if tier == "IS" else str(row.get("evidence_grade") or call_m.get("evidence_grade") or "eligible"),
             "instrument_breakdown": instrument_types,
             "per_symbol_breakdown": per_symbol,
             "excluded_rows_count": (metrics.get("counts") or {}).get("excluded_row_count"),
@@ -1509,6 +1619,11 @@ def _write_leaderboard(
             "calls_evaluated": calls,
             "resolved_win_rate": row_payload["resolved_win_rate"],
             "target_stop_win_rate": row_payload["target_stop_win_rate"],
+            "sample_reliability": row_payload["sample_reliability"],
+            "evidence_grade": row_payload["evidence_grade"],
+            "excess_return_t_stat": row_payload["excess_return_t_stat"],
+            "risk_adjusted_return": row_payload["risk_adjusted_return"],
+            "return_stddev": row_payload["return_stddev"],
             "instrument_breakdown": instrument_types,
             "per_symbol_breakdown": per_symbol,
             "parsed_calls": [],
@@ -1602,7 +1717,7 @@ def _write_leaderboard(
     leaderboard = {
         "generated_at_utc": now.isoformat(),
         "source_generated_at_utc": payload.get("generated_at_utc"),
-        "methodology_version": "0.3.0",
+        "methodology_version": "0.4.0",
         "identity_policy": "masked_random",
         "source_summary": {
             "message_count": payload.get("message_count"),
@@ -1617,6 +1732,7 @@ def _write_leaderboard(
             "same_bar_ambiguous_count": same_bar_ambiguous_count,
             "is_threshold": is_threshold,
             "sample_size_policy": f"Rows with fewer than {is_threshold} scored calls are labelled IS.",
+            "significance_policy": "Evidence grade uses sample reliability, Wilson win-rate intervals, and benchmark-excess return t-statistics.",
         },
         "metrics_v2": payload.get("metrics_v2"),
         "breakdown_samples": samples,

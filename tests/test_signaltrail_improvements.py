@@ -16,6 +16,7 @@ from scripts.evaluate import (
     parse_calls,
     pre_market_exclusion_reason,
     score_bucket,
+    _wilson_interval,
     _write_leaderboard,
 )
 
@@ -140,6 +141,62 @@ class SignalTrailImprovementTests(unittest.TestCase):
         self.assertEqual(metrics["counts"]["excluded_row_count"], 2)
         self.assertEqual(score["calls_count"], 1)
 
+    def test_metrics_include_significance_and_confidence_bounds(self) -> None:
+        now = datetime(2026, 6, 25, tzinfo=UTC)
+        rows = []
+        for idx, ret in enumerate([4.0, 3.0, 2.5, -1.0, 1.5, 2.0, -0.5, 3.5, 0.5, 2.2]):
+            rows.append(
+                {
+                    "call_id": f"c{idx}",
+                    "label": "win" if ret > 1 else "loss" if ret < -0.25 else "flat",
+                    "outcome_credit": 1.0 if ret > 1 else 0.0,
+                    "net_return_pct": ret,
+                    "benchmark_excess_return_pct": ret,
+                    "parser_confidence": 0.8,
+                    "sent_at_utc": now.isoformat(),
+                }
+            )
+
+        metrics = compute_metrics_v2(rows)
+        call_level = metrics["call_level"]
+
+        self.assertGreater(call_level["return_stddev"], 0)
+        self.assertGreater(call_level["excess_return_t_stat"], 0)
+        self.assertGreater(call_level["sample_reliability"], 0)
+        self.assertLess(call_level["win_rate_ci_low"], call_level["win_rate"])
+        self.assertGreater(call_level["win_rate_ci_high"], call_level["win_rate"])
+        self.assertIn(call_level["evidence_grade"], {"exploratory", "suggestive_edge", "strong_edge"})
+
+    def test_wilson_interval_matches_standard_95_percent_binomial_interval(self) -> None:
+        low, high = _wilson_interval(5, 10)
+
+        self.assertAlmostEqual(low, 0.2365895936, places=10)
+        self.assertAlmostEqual(high, 0.7634104064, places=10)
+
+    def test_score_bucket_reports_reliability_and_damps_raw_score(self) -> None:
+        now = datetime(2026, 6, 25, tzinfo=UTC)
+        rows = []
+        for idx, ret in enumerate([20.0, -15.0, 18.0, -14.0, 16.0, -13.0, 15.0, -12.0]):
+            rows.append(
+                {
+                    "call_id": f"volatile-{idx}",
+                    "label": "win" if ret > 0 else "loss",
+                    "outcome_credit": 1.0 if ret > 0 else 0.0,
+                    "net_return_pct": ret,
+                    "benchmark_excess_return_pct": ret,
+                    "parser_confidence": 0.8,
+                    "sent_at_utc": now.isoformat(),
+                }
+            )
+
+        score = score_bucket(rows, now, 30)
+
+        self.assertIn("sample_reliability", score)
+        self.assertIn("evidence_grade", score)
+        self.assertIn("raw_score", score)
+        self.assertGreater(score["return_stddev"], 0)
+        self.assertLessEqual(score["recency_weighted_score"], score["raw_score"])
+
     def test_public_leaderboard_redacts_message_examples(self) -> None:
         now = datetime(2026, 6, 25, tzinfo=UTC)
         outcomes = [
@@ -188,9 +245,16 @@ class SignalTrailImprovementTests(unittest.TestCase):
             out_path = Path(tmp) / "leaderboard.json"
             _write_leaderboard(payload, outcomes, {"10": "chan"}, out_path, now, is_threshold=1)
             data = json.loads(out_path.read_text())
+            row = data["rows"][0]
+            detail = next(iter(data["drilldowns"].values()))
             call = next(iter(data["drilldowns"].values()))["parsed_calls"][0]
             sample = data["breakdown_samples"][0]
 
+        self.assertEqual(data["methodology_version"], "0.4.0")
+        self.assertIn("significance_policy", data["source_summary"])
+        self.assertIn("sample_reliability", row)
+        self.assertIn("evidence_grade", row)
+        self.assertIn("excess_return_t_stat", detail)
         self.assertNotIn("raw_message", call)
         self.assertNotIn("raw_message", sample)
         self.assertIn("[handle]", call["message_excerpt"])

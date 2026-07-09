@@ -63,6 +63,16 @@ This writes:
 - `data/output/outcomes.json` — per-call outcome rows
 - `data/output/scores.json` — lightweight scores per channel/author
 
+For the scripted wrapper:
+
+```bash
+PYTHONPATH=. bash scripts/run_pipeline.sh
+```
+
+Set `LLM_EXTRACT=1` to run the optional extraction experiment after evaluation. Set
+`LEGACY_IMPORT=1` only when you intentionally want to overwrite the public JSON with
+the legacy importer; by default, `evaluate.py` is the canonical public leaderboard writer.
+
 ### With LLM-assisted parsing (optional, improves accuracy)
 
 Local verifier via Ollama:
@@ -133,6 +143,9 @@ After completing the steps above, verify the following before treating the setup
 If you prefer branch-based deploy without Actions: **Settings → Pages → Deploy from branch → main / `public`** (select the `public` folder, not root).
 
 ## Pre-publication checklist
+
+Review the current hardening plan in [docs/viability-plan.md](docs/viability-plan.md)
+before treating the dashboard as a trusted public ranking surface.
 
 Before making the dashboard public, verify all items in `docs/publication-policy.md`:
 

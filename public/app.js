@@ -95,6 +95,12 @@ function renderDataQuality(r) {
   return `<span class="dq-badge ${esc(cls)}">${esc(label)}</span>`;
 }
 
+function evidenceClass(value) {
+  if (value === 'strong_edge' || value === 'suggestive_edge') return 'conf-eligible';
+  if (value === 'no_data') return 'conf-none';
+  return 'conf-is';
+}
+
 function overallStats(rows) {
   const calls = sum(rows, 'calls_evaluated');
   const evaluatedRows = sum(rows, 'rows_evaluated');
@@ -110,6 +116,9 @@ function overallStats(rows) {
     rowResolvedWin: weighted(rows, 'row_resolved_win_rate', 'rows_evaluated'),
     directionalWin: weighted(rows, 'benchmark_relative_win_rate', 'rows_evaluated'),
     bayesWin: weighted(rows, 'bayes_win_rate', 'calls_evaluated'),
+    sampleReliability: weighted(rows, 'sample_reliability', 'calls_evaluated'),
+    excessT: avg(rows, 'excess_return_t_stat'),
+    riskAdjusted: avg(rows, 'risk_adjusted_return'),
     avgReturn: avg(rows.map(row => ({ avg_return_pct: returnPctValue(row) })), 'avg_return_pct'),
     profitFactor: avg(rows, 'profit_factor'),
     targetHitRate: resolvedRows ? targetHits / resolvedRows : null,
@@ -164,6 +173,8 @@ function renderSummary(data) {
     statCard('Target/stop win', pct(target.target_stop_win_rate ?? stats.targetHitRate), `${fmt(sum((data.rows || []).filter(r => Number(r.target_stop_rows) > 0), 'target_stop_rows'), 0)} target-plan rows`),
     statCard('Directional win', pct(directional.benchmark_relative_win_rate ?? stats.directionalWin), 'Versus benchmark'),
     statCard('Sample threshold', fmt(source.is_threshold, 0), source.sample_size_policy || 'IS means insufficient sample'),
+    statCard('Reliability', pct(call.sample_reliability ?? stats.sampleReliability), source.significance_policy || 'Sample and significance adjusted'),
+    statCard('Skill t-stat', fmt(call.excess_return_t_stat ?? stats.excessT, 2), 'Benchmark-excess return significance'),
     statCard('Bayes win', pct(call.bayes_win_rate ?? stats.bayesWin), 'Shrinkage-adjusted'),
     statCard('Avg return', `<span class="${Number(stats.avgReturn || 0) >= 0 ? 'good' : 'bad'}">${fmt(call.avg_return_pct ?? call.expectancy ?? stats.avgReturn, 2)}%</span>`, `Median ${fmt(call.median_return_pct ?? call.median_return, 2)}%`),
     statCard('Profit factor', fmt(call.profit_factor ?? stats.profitFactor, 2), 'Best sources float to the top'),
@@ -181,7 +192,7 @@ function renderInsight(rows, data) {
     const scoreB = (Number(b.profit_factor) || 0) + (Number(b.resolved_win_rate) || 0) * 10 + (Number(returnPctValue(b)) || 0) / 5;
     return scoreB - scoreA;
   })[0];
-  const standout = top ? `${esc(top.display_name)} looks strongest in this public sample: ${pct(top.resolved_win_rate ?? top.call_win_rate)} resolved win, PF ${fmt(top.profit_factor, 2)}, and avg return ${fmt(returnPctValue(top), 2)}%.` : 'No source data available.';
+  const standout = top ? `${esc(top.display_name)} looks strongest in this public sample: ${pct(top.resolved_win_rate ?? top.call_win_rate)} resolved win, PF ${fmt(top.profit_factor, 2)}, avg return ${fmt(returnPctValue(top), 2)}%, and evidence ${esc(top.evidence_grade || top.confidence || '-')}.` : 'No source data available.';
   const moreLikely = top && Number(top.resolved_win_rate) >= 0.5
     ? `${esc(top.display_name)} is the most likely to win more often than lose in the visible sample, based on resolved outcomes and risk-adjusted edge.`
     : 'No source in the current view clears the simple >50% resolved-win heuristic.';
@@ -193,7 +204,7 @@ function renderInsight(rows, data) {
     </div>
     <div style="padding:18px 20px 20px">
       <p class="insight-copy">${standout} ${moreLikely}</p>
-      <p class="insight-meta">At the method level, call win is ${pct(call.win_rate)}, resolved-only win is ${pct(call.resolved_win_rate)}, row win is ${pct(row.win_rate)}, target/stop win is ${pct(target.target_stop_win_rate)}, and directional win vs benchmark is ${pct(directional.benchmark_relative_win_rate)}.</p>
+      <p class="insight-meta">At the method level, call win is ${pct(call.win_rate)}, resolved-only win is ${pct(call.resolved_win_rate)}, row win is ${pct(row.win_rate)}, target/stop win is ${pct(target.target_stop_win_rate)}, directional win vs benchmark is ${pct(directional.benchmark_relative_win_rate)}, and skill t-stat is ${fmt(call.excess_return_t_stat, 2)}.</p>
       <p class="insight-meta">${sampleNote} Treat this as a sample snapshot, not a promise of future returns.</p>
     </div>
   `;
@@ -242,6 +253,13 @@ function renderCharts(rows, data) {
       foot: (row) => `Avg return ${fmt(returnPctValue(row), 2)}%`,
     }),
     renderBarChart(rows, {
+      title: 'Top evidence quality',
+      subtitle: 'Sample reliability after size, resolution, and significance checks.',
+      metric: 'sample_reliability',
+      formatValue: (value) => pct(value),
+      foot: (row) => `${esc(row.evidence_grade || '-')} - t ${fmt(row.excess_return_t_stat, 2)}`,
+    }),
+    renderBarChart(rows, {
       title: 'Top resolved win rate',
       subtitle: 'Resolved-only win rate after outcomes settle.',
       metric: 'resolved_win_rate',
@@ -285,7 +303,8 @@ function renderLeaderboard(rows) {
     ['call_win_rate', 'Call Win %'], ['resolved_win_rate', 'Resolved Win %'], ['row_win_rate', 'Row Win %'],
     ['row_resolved_win_rate', 'Row Resolved Win %'], ['target_stop_win_rate', 'T/S Win %'],
     ['benchmark_relative_win_rate', 'Dir Win %'], ['bayes_win_rate', 'Bayes Win %'],
-    ['avg_return_pct', 'Avg Return'], ['profit_factor', 'PF'], ['confidence', 'Confidence'],
+    ['avg_return_pct', 'Avg Return'], ['profit_factor', 'PF'], ['risk_adjusted_return', 'Risk Adj'],
+    ['excess_return_t_stat', 'Skill t'], ['sample_reliability', 'Reliability'], ['evidence_grade', 'Evidence'], ['confidence', 'Confidence'],
   ];
   const head = `<thead><tr>${cols.map(([key, label]) => sortableTh('leaderboard', key, label)).join('')}</tr></thead>`;
   const body = `<tbody>${rows.map((r, idx) => {
@@ -341,17 +360,19 @@ function cell(r, key) {
   if (key === 'benchmark_relative_win_rate') return pct(r.benchmark_relative_win_rate);
   if (key === 'target_hit_rate') return pct(r.target_hit_rate);
   if (key === 'stop_hit_rate') return pct(r.stop_hit_rate);
+  if (key === 'sample_reliability') return pct(r.sample_reliability);
+  if (key === 'evidence_grade') return `<span class="conf-badge ${evidenceClass(r.evidence_grade)}">${esc(r.evidence_grade ?? '-')}</span>`;
   if (key === 'timeout_rate') return pct(r[key]);
   if (key === 'avg_return_pct') {
     const v = returnPctValue(r);
     if (v === null || v === undefined) return '-';
     return `<span class="${Number(v) >= 0 ? 'good' : 'bad'}">${fmt(v, 2)}%</span>`;
   }
-  if (key === 'profit_factor' || key === 'score') return fmt(r[key], 2);
+  if (key === 'profit_factor' || key === 'score' || key === 'risk_adjusted_return' || key === 'excess_return_t_stat') return fmt(r[key], 2);
   if (key === 'rank') return r.rank ?? '<span class="muted">—</span>';
   if (key === 'calls_evaluated' || key === 'rows_evaluated' || key === 'target_hits' || key === 'stop_hits') return fmt(r[key], 0);
   if (key === 'confidence') {
-    const cls = r.confidence === 'eligible' ? 'conf-eligible' : r.confidence === 'no_evaluable_calls' ? 'conf-none' : 'conf-is';
+    const cls = r.confidence === 'eligible' ? 'conf-eligible' : r.confidence === 'no_evaluable_calls' ? 'conf-none' : evidenceClass(r.confidence);
     return `<span class="conf-badge ${cls}">${esc(r.confidence ?? '—')}</span>`;
   }
   if (key === 'instrument_breakdown') return renderInstrumentMini(r.instrument_breakdown);
@@ -420,6 +441,7 @@ function renderDrilldown() {
       <td>${fmt(item.rows_count, 0)}</td>
       <td>${pct(item.resolved_win_rate)}</td>
       <td>${fmt(item.avg_return_pct ?? item.expectancy, 2)}%</td>
+      <td>${esc(item.evidence_grade || '-')}</td>
     </tr>
   `).join('');
   mount.innerHTML = `
@@ -433,6 +455,9 @@ function renderDrilldown() {
     <div class="drilldown-body">
       <div class="drilldown-stats">
         ${statCard('Resolved win', pct(row?.resolved_win_rate ?? detail.resolved_win_rate), 'Partial targets count fractionally')}
+        ${statCard('Reliability', pct(row?.sample_reliability ?? detail.sample_reliability), esc(row?.evidence_grade ?? detail.evidence_grade ?? '-'))}
+        ${statCard('Skill t-stat', fmt(row?.excess_return_t_stat ?? detail.excess_return_t_stat, 2), 'Benchmark-excess return')}
+        ${statCard('Risk adjusted', fmt(row?.risk_adjusted_return ?? detail.risk_adjusted_return, 2), `Std dev ${fmt(row?.return_stddev ?? detail.return_stddev, 2)}%`)}
         ${statCard('Target/stop', pct(row?.target_stop_win_rate ?? detail.target_stop_win_rate), 'Same-bar ambiguity is flagged')}
         ${statCard('Options excluded', fmt(row?.options_no_premium_count, 0), 'No premium data, not scored')}
         ${statCard('Updates linked', fmt(row?.continuation_update_count, 0), 'Not counted as fresh calls')}
@@ -446,8 +471,8 @@ function renderDrilldown() {
           <h3>Symbol breakdown</h3>
           <div class="table-wrap small-table">
             <table>
-              <thead><tr><th>Symbol</th><th>Rows</th><th>Resolved</th><th>Avg return</th></tr></thead>
-              <tbody>${symbolRows || '<tr><td colspan="4" class="muted">No symbol breakdown available.</td></tr>'}</tbody>
+              <thead><tr><th>Symbol</th><th>Rows</th><th>Resolved</th><th>Avg return</th><th>Evidence</th></tr></thead>
+              <tbody>${symbolRows || '<tr><td colspan="5" class="muted">No symbol breakdown available.</td></tr>'}</tbody>
             </table>
           </div>
         </section>

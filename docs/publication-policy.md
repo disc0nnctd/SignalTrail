@@ -36,14 +36,9 @@ Use neutral alternatives:
 ## Correction Channel (Required Before Public Launch)
 
 A correction or dispute contact must be visible on every public page before launch.
-Options (choose one and update the dashboard footer accordingly):
+The configured correction channel is:
 
-- GitHub Issues on the public repo (recommended for open-source deployments)
-- A dedicated email address (e.g. `signaltrail-corrections@yourdomain.com`)
-- A public feedback form
-
-**Human decision required:** the correction channel has not been configured yet.
-Update `public/index.html` with the chosen contact before launch.
+- GitHub Issues on the public repo: `https://github.com/disc0nnctd/SignalTrail/issues`
 
 ## Pre-Publication Checklist
 
@@ -53,7 +48,7 @@ Before any public release:
 2. Privacy: no personal addresses, numbers, or sensitive identifiers.
 3. Methodology: linked and current.
 4. Confidence labels: visible (`IS` for insufficient sample).
-5. Correction channel: visible and actionable (see section above — **not yet configured**).
+5. Correction channel: visible and actionable (see section above).
 6. Secondary moderation review: completed (**human decision required**).
 7. Public artifact check: publish only the masked public dataset, not local truth artifacts.
 

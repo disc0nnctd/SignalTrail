@@ -15,8 +15,13 @@ data/private/
 .cache/*.session
 
 # Generated output
-data/output/*.json
+data/output/
+leaderboard/
 
 # IDE & local tooling
 .claude/
 .omc/
+.omo/
+.omx/
+.wrangler/
+.cache/
